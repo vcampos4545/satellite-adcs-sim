@@ -64,20 +64,39 @@ target_include_directories(imgui PUBLIC
 target_link_libraries(imgui PUBLIC glfw)
 
 # ---------------------------------------------------------------------------
-# The satellite: a full closed-loop cubesat ADCS -- PID/LQR/cascaded
-# attitude control, a multiplicative EKF fed by a star tracker (with a
-# sun+magnetometer TRIAD fallback when it's blinded/slewing too fast),
-# reaction wheels + magnetorquers with B-dot detumble and cross-product-law
-# desaturation, and randomly-occurring hardware faults. See README.md for
-# the full feature list and this project's scope relative to
-# spacecraft-dynamics-sim (the engine) and constellation-sim (orbit-level
-# mission design).
+# fsw -- the flight software itself: PID/LQR/cascaded attitude control, a
+# multiplicative EKF fed by a star tracker (with a sun+magnetometer TRIAD
+# fallback when it's blinded/slewing too fast), B-dot detumble, cross-
+# product-law desaturation, and the FDIR mode-manager/fault layer above all
+# of it. Split into its own library (not just object files baked into the
+# satellite-adcs-sim executable) so tests/ can link exactly this and
+# nothing else -- proving, by construction, that FSW logic never needs vgl,
+# imgui, or even `rigidbody` (see ADCS.h/FDIR.h's own "hardware-abstracted"
+# comments; only glm, for plain vector/quaternion math).
 # ---------------------------------------------------------------------------
-add_executable(satellite-adcs-sim
-  src/satellite_adcs_sim.cpp
+add_library(fsw STATIC
   src/ADCS.cpp
   src/Controllers.cpp
   src/FDIR.cpp
 )
+target_include_directories(fsw PUBLIC src)
+target_link_libraries(fsw PUBLIC glm::glm)
+
+# ---------------------------------------------------------------------------
+# The satellite: builds the simulated hardware/sensors, samples them into
+# FSWInputs, drives `fsw` each cycle, and applies the FSWOutputs it returns
+# -- see README.md for the full feature list and this project's scope
+# relative to spacecraft-dynamics-sim (the engine) and constellation-sim
+# (orbit-level mission design).
+# ---------------------------------------------------------------------------
+add_executable(satellite-adcs-sim
+  src/satellite_adcs_sim.cpp
+)
 target_include_directories(satellite-adcs-sim PRIVATE src)
-target_link_libraries(satellite-adcs-sim PRIVATE rigidbody vgl imgui)
+target_link_libraries(satellite-adcs-sim PRIVATE fsw rigidbody vgl imgui)
+
+# ---------------------------------------------------------------------------
+# Tests -- see tests/test_common.h and docs/TESTING.md.
+# ---------------------------------------------------------------------------
+enable_testing()
+add_subdirectory(tests)
