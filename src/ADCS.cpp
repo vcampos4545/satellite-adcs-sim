@@ -77,7 +77,8 @@ void ADCS::configure(const HardwareConfig &hw, const glm::quat &initialAttitude)
   gyroNoisePsd = GYRO_NOISE_STD_RAD_S * GYRO_NOISE_STD_RAD_S;
   gyroBiasWalkPsd = GYRO_BIAS_DRIFT_STD_RAD_S * GYRO_BIAS_DRIFT_STD_RAD_S;
 
-  lastTunedMode = mode;
+  effectiveMode = mode; // fdir hasn't run yet -- no fault to override with
+  lastTunedMode = effectiveMode;
   retuneForMode();
 
   // Detumble's rate-damping gain isn't part of the quaternion-error
@@ -148,7 +149,7 @@ void ADCS::resetController()
 
 void ADCS::retuneForMode()
 {
-  ModeTuning t = tuningForMode(mode);
+  ModeTuning t = tuningForMode(effectiveMode);
   pid.autoTune(hw_.busInertiaTensor, t.settlingTime, t.dampingRatio);
   lqr.autoTune(hw_.busInertiaTensor, t.settlingTime, t.dampingRatio, t.omega_max);
   cascaded.autoTune(hw_.busInertiaTensor, t.settlingTime, t.dampingRatio, t.omega_max);
@@ -157,12 +158,6 @@ void ADCS::retuneForMode()
 
 FSWOutputs ADCS::step(const FSWInputs &in, float dt)
 {
-  if (mode != lastTunedMode)
-  {
-    retuneForMode();
-    lastTunedMode = mode;
-  }
-
   lastGyroBody = in.imu.gyro;
   lastAccelBody = in.imu.accel;
 
@@ -220,6 +215,26 @@ FSWOutputs ADCS::step(const FSWInputs &in, float dt)
   // fixes that instead of only bounding its effect.
   glm::vec3 rate = in.imu.gyro - gyroBiasEstimate;
 
+  // Autonomous mode manager / FDIR: decides what guidance/control actually
+  // execute this cycle, using exactly the FSW-derived signals available at
+  // this point (wheel health telemetry, the EKF's own confidence, and the
+  // bias-corrected rate above) -- never anything this class itself
+  // couldn't otherwise know. Runs even under manualOverride (a fault is
+  // still worth detecting/logging while a human has the stick), it just
+  // doesn't get to act until manual control is released -- see below.
+  FdirInputs fdirIn;
+  fdirIn.wheelTelemetry = in.wheelTelemetry;
+  fdirIn.attitudeUncertaintyDeg = attitudeUncertaintyDeg;
+  fdirIn.rateBody = rate;
+  fdirIn.commandedMode = mode;
+  effectiveMode = fdir.evaluate(fdirIn, dt);
+
+  if (effectiveMode != lastTunedMode)
+  {
+    retuneForMode();
+    lastTunedMode = effectiveMode;
+  }
+
   if (manualOverride)
   {
     // Bypass guidance/control/allocation entirely -- a UI panel commanding
@@ -239,11 +254,11 @@ FSWOutputs ADCS::step(const FSWInputs &in, float dt)
 
 void ADCS::computeGuidance(const glm::vec3 &spacecraftPositionWorld, float dt)
 {
-  if (mode == PointingMode::DETUMBLE)
+  if (effectiveMode == PointingMode::DETUMBLE)
     return; // no attitude target; computeControl uses a rate-only law instead
 
   glm::vec3 pointDir;
-  switch (mode)
+  switch (effectiveMode)
   {
   case PointingMode::NADIR:
     // "Straight down" -- this sim has no orbital mechanics, so there's no
@@ -304,7 +319,7 @@ void ADCS::computeGuidance(const glm::vec3 &spacecraftPositionWorld, float dt)
 
 void ADCS::computeControl(glm::quat attitude, glm::vec3 rate, float dt)
 {
-  if (mode == PointingMode::DETUMBLE)
+  if (effectiveMode == PointingMode::DETUMBLE)
   {
     if (detumbleActuator == DetumbleActuator::MAGNETORQUERS_BDOT)
     {
@@ -367,7 +382,7 @@ void ADCS::updateDesaturation(const FSWInputs &in)
 
   // DETUMBLE already owns the magnetorquers for B-dot -- don't fight it
   // over the same hardware.
-  if (mode == PointingMode::DETUMBLE)
+  if (effectiveMode == PointingMode::DETUMBLE)
   {
     desatActive = false;
     return;

@@ -77,6 +77,7 @@ add_executable(satellite-adcs-sim
   src/satellite_adcs_sim.cpp
   src/ADCS.cpp
   src/Controllers.cpp
+  src/FDIR.cpp
 )
 target_include_directories(satellite-adcs-sim PRIVATE src)
 target_link_libraries(satellite-adcs-sim PRIVATE rigidbody vgl imgui)

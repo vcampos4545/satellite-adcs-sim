@@ -16,6 +16,7 @@
 #include <memory>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <algorithm>
 #include <glm/gtc/constants.hpp>
 
@@ -596,6 +597,10 @@ static void drawFswTab(ADCS &adcs, SensorTelemetry &telemetry, float trueErrDeg)
   int modeIdx = static_cast<int>(adcs.mode);
   if (ImGui::Combo("Pointing mode", &modeIdx, modeNames, IM_ARRAYSIZE(modeNames)))
     adcs.mode = static_cast<PointingMode>(modeIdx);
+  ImGui::TextDisabled("This is what's commanded -- FDIR can override it (see FDIR tab).");
+
+  if (adcs.mode != adcs.effectiveMode)
+    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "FDIR override active: flying %s instead", modeName(adcs.effectiveMode));
 
   if (adcs.manualOverride)
     ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Manual actuator override is active (Actuators tab) -- FSW is not commanding hardware.");
@@ -749,6 +754,90 @@ static void drawActuatorsTab(ADCS &adcs, const std::vector<ReactionWheel *> &whe
   }
 }
 
+static const char *fdirFaultName(uint32_t flag)
+{
+  switch (flag)
+  {
+  case FDIR_FAULT_WHEEL_AUTHORITY_LOST:
+    return "Wheel authority lost";
+  case FDIR_FAULT_ATTITUDE_UNCERTAIN:
+    return "Attitude uncertain";
+  case FDIR_FAULT_EXCESS_RATE:
+    return "Excess body rate";
+  default:
+    return "Unknown";
+  }
+}
+
+// Renders `flags` as a comma-separated list of fault names into `out`
+// (fixed-size, matching this project's no-dynamic-allocation-in-FSW-UI
+// convention already used elsewhere in this file for label buffers).
+static void formatFaultFlags(uint32_t flags, char *out, size_t outSize)
+{
+  out[0] = '\0';
+  bool first = true;
+  for (uint32_t bit = 1; bit != 0; bit <<= 1)
+  {
+    if (!(flags & bit))
+      continue;
+    size_t used = std::strlen(out);
+    std::snprintf(out + used, outSize - used, "%s%s", first ? "" : ", ", fdirFaultName(bit));
+    first = false;
+  }
+}
+
+// Autonomous mode-manager/FDIR status: what state it's in, which faults are
+// currently latched, the tunable thresholds that decide when a fault trips,
+// and a scrollable log of every trip/clear event -- the flight-software
+// equivalent of a fault log a real ops team would review after the fact.
+static void drawFdirTab(ADCS &adcs)
+{
+  FDIR &fdir = adcs.fdir;
+
+  ImGui::SeparatorText("Status");
+  if (fdir.state() == FdirState::NOMINAL)
+    ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "NOMINAL");
+  else
+    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.2f, 1.0f), "SAFE_HOLD");
+
+  ImGui::Checkbox("Autonomy enabled", &fdir.enabled);
+  ImGui::TextDisabled("When off, faults are still detected and logged but never override the commanded mode.");
+
+  ImGui::SeparatorText("Active Faults");
+  uint32_t active = fdir.activeFaults();
+  if (active == FDIR_FAULT_NONE)
+  {
+    ImGui::TextDisabled("None");
+  }
+  else
+  {
+    for (uint32_t bit = 1; bit != 0; bit <<= 1)
+      if (active & bit)
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.2f, 1.0f), "[%s]", fdirFaultName(bit));
+  }
+  if (ImGui::Button("Clear latched faults (ground command)"))
+    fdir.clearLatchedFaults();
+  ImGui::TextDisabled("Faults latch on trip and stay active even if the condition clears -- this is the explicit ack that drops them.");
+
+  ImGui::SeparatorText("Thresholds");
+  ImGui::DragInt("Min healthy wheels", &fdir.minHealthyWheels, 0.05f, 0, NUM_WHEELS);
+  ImGui::DragFloat("Uncertainty trigger (deg)", &fdir.attitudeUncertaintyTriggerDeg, 0.1f, 0.1f, 45.0f, "%.1f");
+  ImGui::DragFloat("Uncertainty sustain (s)", &fdir.attitudeUncertaintySustainedS, 0.5f, 0.0f, 60.0f, "%.1f");
+  ImGui::DragFloat("Excess rate (rad/s)", &fdir.excessRateRadS, 0.05f, 0.1f, 10.0f, "%.2f");
+
+  ImGui::SeparatorText("Event Log (newest first)");
+  if (fdir.eventCount == 0)
+    ImGui::TextDisabled("No events yet.");
+  for (int i = 0; i < fdir.eventCount; i++)
+  {
+    const FdirEvent &ev = fdir.recentEvent(i);
+    char flagsBuf[128];
+    formatFaultFlags(ev.flags, flagsBuf, sizeof(flagsBuf));
+    ImVec4 color = ev.entering ? ImVec4(1.0f, 0.4f, 0.2f, 1.0f) : ImVec4(0.5f, 0.8f, 1.0f, 1.0f);
+    ImGui::TextColored(color, "[t=%7.1fs] %s: %s", ev.missionTimeS, ev.entering ? "TRIPPED" : "CLEARED", flagsBuf);
+  }
+}
+
 // Simulation-level knobs, as opposed to ADCS/FSW state -- things that
 // belong to the test harness around the spacecraft, not to the spacecraft
 // itself. Held by value in main() and handed to drawSimulationTab() by
@@ -844,6 +933,11 @@ static void drawADCSPanel(ADCS &adcs, std::vector<ReactionWheel *> &wheels,
     if (ImGui::BeginTabItem("Actuators"))
     {
       drawActuatorsTab(adcs, wheels, magnetorquers);
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("FDIR"))
+    {
+      drawFdirTab(adcs);
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("Simulation"))

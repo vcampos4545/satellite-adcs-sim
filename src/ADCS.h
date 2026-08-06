@@ -3,23 +3,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include "Controllers.h"
 #include "FlightTypes.h"
-
-// Pointing modes. Nadir/Sun/Target/Slew/Fine-pointing all resolve to a
-// target attitude and go through the normal PID/LQR/cascaded quaternion
-// controller (with different tuning per mode -- see modeTuning() in
-// ADCS.cpp); Detumble bypasses attitude control entirely and just damps
-// rate, since a freshly-deployed, tumbling satellite has no attitude
-// reference worth chasing yet.
-enum class PointingMode
-{
-  NADIR,         // body +Z toward a fixed "down" direction (no orbit in this sim, so no real nadir vector)
-  SUN_POINTING,  // body +Z toward the sun
-  DETUMBLE,      // damp angular rate toward zero; ignores attitude entirely
-  TARGET,        // body +Z toward `target`, default tuning
-  SLEW,          // body +Z toward `target`, tuned for a fast large-angle move
-  FINE_POINTING, // body +Z toward `target`, tuned for a slow, precise settle
-  REFLECT,       // body +Z (the mirror's normal) bisects sun and target -- bounces sunlight onto `target`
-};
+#include "FDIR.h"
 
 enum class ControllerType
 {
@@ -56,9 +40,25 @@ enum class DetumbleActuator
 class ADCS
 {
 public:
+  // The commanded mode -- what ground/UI last asked for. Guidance/control
+  // do NOT read this directly; see `effectiveMode` below.
   PointingMode mode = PointingMode::TARGET;
   ControllerType controllerType = ControllerType::PID;
   DetumbleActuator detumbleActuator = DetumbleActuator::REACTION_WHEELS;
+
+  // Autonomous mode manager / fault monitor: runs every step() cycle and
+  // may override `mode` with a safe mode of its own choosing (see FDIR.h)
+  // -- the same "mode manager" vs. "GNC" split a real FSW's task structure
+  // has. Public so a UI panel can show its state/event log and tune
+  // thresholds live, same pattern as pidController()/lqrController() below.
+  FDIR fdir;
+
+  // What guidance/control actually execute this cycle -- `mode` unless
+  // `fdir` is in SAFE_HOLD and has overridden it. Read-only in spirit
+  // (step() recomputes it every cycle from `fdir.evaluate()`); exposed so
+  // a UI panel can show "commanded X, but actually flying Y because of a
+  // fault" instead of that distinction being invisible.
+  PointingMode effectiveMode = PointingMode::TARGET;
 
   glm::vec3 target = {0.5f, 0.5f, 0.5f};      // world position for TARGET/SLEW/FINE_POINTING
   glm::vec3 sunPosition = {0.0f, 0.0f, 0.0f}; // world position for SUN_POINTING

@@ -19,6 +19,28 @@
 constexpr int NUM_WHEELS = 4;
 constexpr int NUM_TORQUERS = 3;
 
+// Pointing modes. Nadir/Sun/Target/Slew/Fine-pointing/Reflect all resolve
+// to a target attitude and go through the normal PID/LQR/cascaded
+// quaternion controller (with different tuning per mode -- see
+// modeTuning() in ADCS.cpp); Detumble bypasses attitude control entirely
+// and just damps rate, since a freshly-deployed, tumbling satellite has no
+// attitude reference worth chasing yet.
+//
+// Lives here rather than in ADCS.h because FDIR.h needs it too (its
+// evaluate() returns one) without creating an ADCS.h <-> FDIR.h include
+// cycle -- same category of shared plain-data type as everything else in
+// this header.
+enum class PointingMode
+{
+  NADIR,         // body +Z toward a fixed "down" direction (no orbit in this sim, so no real nadir vector)
+  SUN_POINTING,  // body +Z toward the sun
+  DETUMBLE,      // damp angular rate toward zero; ignores attitude entirely
+  TARGET,        // body +Z toward `target`, default tuning
+  SLEW,          // body +Z toward `target`, tuned for a fast large-angle move
+  FINE_POINTING, // body +Z toward `target`, tuned for a slow, precise settle
+  REFLECT,       // body +Z (the mirror's normal) bisects sun and target -- bounces sunlight onto `target`
+};
+
 // ---------------------------------------------------------------------------
 // Hardware configuration -- set once at ADCS::configure(), cached for the
 // life of the program. Mirrors what a real flight computer would get from

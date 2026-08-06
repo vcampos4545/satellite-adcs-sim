@@ -18,9 +18,11 @@ This project itself builds on [spacecraft-dynamics-sim](https://github.com/vcamp
 - Cross-product-law momentum desaturation, running automatically in the background (not a mode) whenever wheel saturation gets close, with headroom-aware gain scaling so the desaturation maneuver itself can't destabilize pointing.
 - Randomly-occurring wheel faults (degraded or dead) the allocator has to route around.
 
-**Pointing modes**: Nadir, Sun-pointing, Detumble, Target, Slew (fast/coarse), and Fine-pointing (slow/precise) — each with its own gain/rate-limit tuning rather than one-size-fits-all.
+**FDIR / mode manager**: an autonomous fault-detection layer that runs every FSW cycle above guidance/control — the same "mode manager" vs. "GNC" split a real flight computer's task structure has. It watches wheel health telemetry, the EKF's own confidence, and body rate, and can override the commanded pointing mode with a safe one (Sun-pointing, or Detumble first if the rate itself is out of the controller's envelope) without waiting for ground intervention. Faults latch until explicitly acknowledged, autonomy itself is ground-inhibitable, and every trip/clear is timestamped in an onboard event log.
 
-**GUI**: a single tabbed panel (FSW / Sensors / Actuators / Simulation) covering live gain tuning, sensor telemetry with rolling plots, per-actuator status and manual override, and simulation controls (pause, induced tumbles, fault injection, forced desaturation) — plus a 3D view with sun/target pointing-error lines, magnetic field visualization, and (for fun) a mirror on the +Z face showing sun-reflection geometry with the sun sized to its real ~32 arcminute angular diameter.
+**Pointing modes**: Nadir, Sun-pointing, Detumble, Target, Slew (fast/coarse), Fine-pointing (slow/precise), and Reflect (aims the +Z mirror's normal to bounce sunlight onto `target` instead of pointing at it directly) — each with its own gain/rate-limit tuning rather than one-size-fits-all.
+
+**GUI**: a single tabbed panel (FSW / Sensors / Actuators / FDIR / Simulation) covering live gain tuning, sensor telemetry with rolling plots, per-actuator status and manual override, FDIR status/thresholds/event log, and simulation controls (pause, induced tumbles, fault injection, forced desaturation) — plus a 3D view with sun/target pointing-error lines, magnetic field visualization, and (for fun) a mirror on the +Z face showing sun-reflection geometry with the sun sized to its real ~32 arcminute angular diameter.
 
 ## Build
 
