@@ -5,8 +5,10 @@
 #include <rigidbody/sensors/IMU.h>
 #include <rigidbody/sensors/Magnetometer.h>
 #include <rigidbody/sensors/StarTracker.h>
+#include <rigidbody/sensors/SunSensor.h>
 #include <rigidbody/environment/MagneticField.h>
 #include "ADCS.h"
+#include "FlightTypes.h"
 #include "common/World.h"
 #include "common/ImGuiLayer.h"
 #include "common/Telemetry.h"
@@ -41,9 +43,14 @@ struct Cubesat
   IMU imu; // re-mounted off-center in buildCubesatPyramid()
   Magnetometer magnetometer;
   StarTracker starTracker; // boresight set in buildCubesatPyramid()
+  SunSensor sunSensor;
 };
 
-static Cubesat buildCubesatPyramid(PhysicsWorld &world)
+// Builds the simulated hardware AND the matching HardwareConfig ADCS::
+// configure() needs, from the exact same geometry in one place -- keeping
+// them in two separate functions risks the flight-software config quietly
+// drifting out of sync with what the simulated actuators actually are.
+static Cubesat buildCubesatPyramid(PhysicsWorld &world, HardwareConfig &outHw)
 {
   Cubesat sat;
   sat.body = world.createBody(
@@ -78,14 +85,14 @@ static Cubesat buildCubesatPyramid(PhysicsWorld &world)
                        mountRadius * std::sin(azimuth),
                        mountHeight);
 
-    auto wheel = std::make_unique<ReactionWheel>(
-        mountPos,
-        axis,
-        0.001f,                                      // max torque (Nm) — same as the 3-wheel cubesat
-        6000.0f * (2.0f * glm::pi<float>() / 60.0f), // 6000 RPM max
-        1e-6f);                                      // wheel inertia (kg*m^2)
+    const float maxTorqueNm = 0.001f;                                  // same as the 3-wheel cubesat
+    const float maxSpeedRadS = 6000.0f * (2.0f * glm::pi<float>() / 60.0f); // 6000 RPM max
+    const float wheelInertia = 1e-6f;                                  // kg*m^2
+
+    auto wheel = std::make_unique<ReactionWheel>(mountPos, axis, maxTorqueNm, maxSpeedRadS, wheelInertia);
 
     sat.wheels.push_back(wheel.get());
+    outHw.wheels[i] = {axis, maxTorqueNm, maxSpeedRadS, wheelInertia};
     sat.body->addForceGenerator(std::move(wheel));
   }
 
@@ -97,10 +104,12 @@ static Cubesat buildCubesatPyramid(PhysicsWorld &world)
   // torque rod.
   const glm::vec3 torquerAxes[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
   const glm::vec3 torquerMounts[3] = {{0.045f, 0, 0}, {0, 0.045f, 0}, {0, 0, -0.045f}};
+  const float maxMomentAm2 = 0.2f;
   for (int i = 0; i < 3; ++i)
   {
-    auto rod = std::make_unique<Magnetorquer>(torquerMounts[i], torquerAxes[i], 0.2f);
+    auto rod = std::make_unique<Magnetorquer>(torquerMounts[i], torquerAxes[i], maxMomentAm2);
     sat.magnetorquers.push_back(rod.get());
+    outHw.torquers[i] = {torquerAxes[i], maxMomentAm2};
     sat.body->addForceGenerator(std::move(rod));
   }
 
@@ -116,6 +125,8 @@ static Cubesat buildCubesatPyramid(PhysicsWorld &world)
   // so it isn't staring straight at whatever TARGET/SUN_POINTING/NADIR is
   // currently pointing +Z toward. Real placement follows the same logic:
   // keep the tracker away from the sun-facing/payload side.
+
+  outHw.busInertiaTensor = sat.body->inertiaTensor;
 
   return sat;
 }
@@ -577,7 +588,7 @@ static void torquerStatus(const Magnetorquer *m, const char *&outText, ImVec4 &o
   }
 }
 
-static void drawFswTab(ADCS &adcs, SensorTelemetry &telemetry)
+static void drawFswTab(ADCS &adcs, SensorTelemetry &telemetry, float trueErrDeg)
 {
   static const char *modeNames[] = {"Nadir", "Sun Pointing", "Detumble", "Target", "Slew", "Fine Pointing"};
   int modeIdx = static_cast<int>(adcs.mode);
@@ -592,7 +603,7 @@ static void drawFswTab(ADCS &adcs, SensorTelemetry &telemetry)
     ImGui::TextDisabled("DETUMBLE has no attitude target; showing the last value from before it was entered.");
   ImGui::Text("FSW estimate: %.2f deg", adcs.estimatedPointingErrorDeg);
   plotChannel("Estimated error", telemetry.estimatedPointingErrorDeg, "deg");
-  ImGui::Text("True (ground truth, diagnostic only): %.2f deg", adcs.truePointingErrorDeg);
+  ImGui::Text("True (ground truth, diagnostic only): %.2f deg", trueErrDeg);
   plotChannel("True error", telemetry.truePointingErrorDeg, "deg");
   ImGui::Text("Estimator confidence (1-sigma): %.4f deg (%.1f arcsec)",
               adcs.attitudeUncertaintyDeg, adcs.attitudeUncertaintyDeg * 3600.0f);
@@ -720,16 +731,14 @@ static void drawActuatorsTab(ADCS &adcs, const std::vector<ReactionWheel *> &whe
   {
     ImGui::TextDisabled("Directly commands hardware; FSW guidance/control/allocation is skipped.");
 
-    adcs.manualWheelTorqueNm.resize(wheels.size(), 0.0f);
-    for (size_t i = 0; i < wheels.size(); i++)
+    for (size_t i = 0; i < wheels.size() && i < (size_t)NUM_WHEELS; i++)
     {
       char label[32];
       std::snprintf(label, sizeof(label), "Wheel %zu (Nm)", i);
       ImGui::SliderFloat(label, &adcs.manualWheelTorqueNm[i], -wheels[i]->maxTorque, wheels[i]->maxTorque, "%.5f");
     }
 
-    adcs.manualMagnetorquerMomentAm2.resize(magnetorquers.size(), 0.0f);
-    for (size_t i = 0; i < magnetorquers.size(); i++)
+    for (size_t i = 0; i < magnetorquers.size() && i < (size_t)NUM_TORQUERS; i++)
     {
       char label[32];
       std::snprintf(label, sizeof(label), "Rod %zu (A*m^2)", i);
@@ -811,7 +820,8 @@ static void drawSimulationTab(SimControls &sim, WheelFaultInjector &faultInjecto
 static void drawADCSPanel(ADCS &adcs, std::vector<ReactionWheel *> &wheels,
                           const std::vector<Magnetorquer *> &magnetorquers,
                           SensorTelemetry &telemetry, SimControls &sim,
-                          WheelFaultInjector &faultInjector, RigidBody *body)
+                          WheelFaultInjector &faultInjector, RigidBody *body,
+                          float trueErrDeg)
 {
   ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowSize(ImVec2(380, 560), ImGuiCond_FirstUseEver);
@@ -821,7 +831,7 @@ static void drawADCSPanel(ADCS &adcs, std::vector<ReactionWheel *> &wheels,
   {
     if (ImGui::BeginTabItem("FSW"))
     {
-      drawFswTab(adcs, telemetry);
+      drawFswTab(adcs, telemetry, trueErrDeg);
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("Sensors"))
@@ -882,27 +892,36 @@ int main()
   glm::vec2 lastMousePos = gui.getMousePosition();
 
   PhysicsWorld world;
-  Cubesat sat = buildCubesatPyramid(world);
+  HardwareConfig hwConfig;
+  Cubesat sat = buildCubesatPyramid(world, hwConfig);
 
-  // Flight software: ADCS holds references to the body, the wheels/
-  // magnetorquers (its actuators), and the IMU/magnetometer/star tracker
-  // (its sensors) — see ADCS.h/.cpp. It never reads body->orientation/
-  // angularVelocity directly.
-  ADCS adcs(sat.body, sat.wheels, &sat.imu, sat.magnetorquers, &sat.magnetometer, &sat.starTracker);
-  // No Gravity generator is attached to this world (free-floating orbit),
-  // so ambient gravity for the IMU model is zero -- ADCS doesn't hardcode
-  // that assumption itself, it just reads whatever it's told here.
-  adcs.gravity = glm::vec3(0.0f);
+  // Flight software: ADCS is hardware-abstracted (see FlightTypes.h) --
+  // configure() gives it a fixed hardware description and an initial
+  // attitude estimate; every cycle after this, step() only ever sees
+  // plain FSWInputs the harness (this loop) builds from the simulated
+  // sensors, and returns plain FSWOutputs the harness applies to the
+  // simulated actuators. ADCS itself never holds a RigidBody*/sensor
+  // pointer/actuator pointer at all.
+  ADCS adcs;
+  adcs.configure(hwConfig, sat.body->orientation);
   adcs.target = randomTarget();
   adcs.sunPosition = randomSunPosition();
   float adcsTimer = 0.0f;
   float missionTime = 0.0f;
+  float trueErrDeg = 0.0f; // harness-side diagnostic: true (ground-truth) pointing error, held between ADCS cycles like fieldNow below
+
+  // No Gravity generator is attached to this world (free-floating orbit),
+  // so ambient gravity for the IMU model is zero -- this is harness-side
+  // simulation setup now, not something ADCS itself ever sees or assumes.
+  glm::vec3 gravity{0.0f};
 
   // Ambient magnetic field model (see rigidbody/environment/MagneticField.h)
   // -- default LEO/ISS-like altitude and inclination. Sampled every frame
   // below and written into both the magnetorquers (which need it to turn a
-  // commanded dipole moment into torque) and ADCS (which needs it to
-  // interpret the magnetometer), the same way `adcs.gravity` feeds the IMU.
+  // commanded dipole moment into torque) and ADCS's ambientFieldWorld
+  // (its TRIAD reference vector, the same category of "known model input"
+  // as target/sunPosition -- see ADCS.h), the same way `gravity` feeds the
+  // IMU sample below.
   MagneticField magneticField;
 
   SensorTelemetry telemetry(Config::TELEMETRY_HISTORY_SAMPLES);
@@ -978,13 +997,48 @@ int main()
       adcs.ambientFieldWorld = fieldNow;
 
       // =================== FLIGHT SOFTWARE (20 Hz) ===================
-      // Reads the IMU/magnetometer as sensors, commands the reaction
-      // wheels and (during B-dot detumble) the magnetorquers.
+      // This is the HAL boundary in action: sample every simulated sensor,
+      // pack the readings into a plain FSWInputs, hand it to ADCS::step()
+      // (which never sees a RigidBody/sensor/actuator object at all), then
+      // apply the plain FSWOutputs it returns to the simulated actuators.
+      // A HIL adapter would replace exactly the sampling and command-
+      // application on either side of that call -- ADCS::step() itself
+      // wouldn't change.
       adcsTimer += dt;
       if (adcsTimer > 0.05f)
       {
-        adcs.run(adcsTimer);
+        IMU::Reading imuReading = sat.imu.sample(*sat.body, gravity, adcsTimer);
+        Magnetometer::Reading magReading = sat.magnetometer.sample(*sat.body, fieldNow, adcsTimer);
+        glm::vec3 sunDirWorld = adcs.sunPosition - sat.body->position;
+        StarTracker::Reading starReading = sat.starTracker.sample(*sat.body, sunDirWorld);
+        SunSensor::Reading sunReading = sat.sunSensor.sample(*sat.body, sunDirWorld);
+
+        FSWInputs inputs;
+        inputs.imu = {imuReading.gyro, imuReading.accel};
+        inputs.mag = {magReading.field, true};
+        inputs.star = {starReading.attitude, starReading.valid};
+        inputs.sunSensor = {sunReading.sunDirBody, sunReading.valid};
+        for (int i = 0; i < NUM_WHEELS; i++)
+          inputs.wheelTelemetry[i] = {sat.wheels[i]->currentSpeed, sat.wheels[i]->healthFactor > 0.01f};
+        inputs.spacecraftPositionWorld = sat.body->position; // stands in for a real nav solution (no GPS/ephemeris modeled)
+
+        FSWOutputs out = adcs.step(inputs, adcsTimer);
+
+        for (int i = 0; i < NUM_WHEELS; i++)
+          sat.wheels[i]->commandTorque(out.wheelCommands[i].torqueNm);
+        for (int i = 0; i < NUM_TORQUERS; i++)
+          sat.magnetorquers[i]->commandDipoleMoment(out.torquerCommands[i].momentAm2);
+
         adcsTimer = 0.0f;
+
+        // Ground-truth diagnostic -- computed here, not by ADCS (which has
+        // no way to know body->orientation at all anymore), the same way
+        // this project's earlier true-vs-estimated pointing error
+        // comparisons always required direct simulation access.
+        glm::quat trueErrQ = glm::inverse(sat.body->orientation) * adcs.targetAttitude;
+        if (trueErrQ.w < 0.0f)
+          trueErrQ = -trueErrQ;
+        trueErrDeg = glm::degrees(2.0f * std::acos(glm::clamp(trueErrQ.w, -1.0f, 1.0f)));
 
         // Pushed once per ADCS cycle (a new sensor reading actually
         // exists), not once per render frame.
@@ -992,7 +1046,7 @@ int main()
         telemetry.accelMagMs2.push(glm::length(adcs.lastAccelBody));
         telemetry.magFieldMagUt.push(glm::length(adcs.magFieldBody) * 1e6f);
         telemetry.estimatedPointingErrorDeg.push(adcs.estimatedPointingErrorDeg);
-        telemetry.truePointingErrorDeg.push(adcs.truePointingErrorDeg);
+        telemetry.truePointingErrorDeg.push(trueErrDeg);
       }
 
       if (sim.faultInjectionEnabled)
@@ -1031,7 +1085,7 @@ int main()
     gui.drawLine(sat.body->position, adcs.target, {0, 1.0f, 0});
     gui.drawLine(sat.body->position, adcs.sunPosition, {1.0f, 0.9f, 0.1f});
 
-    drawADCSPanel(adcs, sat.wheels, sat.magnetorquers, telemetry, sim, faultInjector, sat.body);
+    drawADCSPanel(adcs, sat.wheels, sat.magnetorquers, telemetry, sim, faultInjector, sat.body, trueErrDeg);
 
     imguiLayer.endFrame();
     gui.endFrame();
