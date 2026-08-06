@@ -4,11 +4,14 @@
 #include <random>
 
 // Shared "environment" dressing for example scenarios: background color,
-// lighting direction, an optional ground plane, an optional starfield, and
-// a reference grid. Each example picks the WorldType matching its setting,
-// calls world.apply(gui) once right after constructing the GUI, then
-// world.draw(gui, gridSize, gridStep) once per frame before drawing scene
-// content.
+// lighting direction, an optional ground plane, and an optional starfield.
+// Each example picks the WorldType matching its setting, calls
+// world.apply(gui) once right after constructing the GUI, then world.draw(gui)
+// once per frame before drawing scene content. A reference grid is NOT part
+// of this -- it used to be a single infinite-ground-style plane here, but
+// that's scene dressing scaled for a scenario with an actual ground; a
+// scenario that wants a coordinate grid at its own object's scale (see
+// satellite_adcs_sim.cpp's drawSatelliteCoordinateBox()) draws its own.
 //
 // This is example-level scene dressing, not a rendering primitive, so it
 // lives here rather than in VGL -- it encodes conventions specific to how
@@ -51,17 +54,14 @@ public:
     }
   }
 
-  // Call once per frame, before drawing scene content. gridSize/gridStep
-  // set the reference grid's extent and spacing, in world units.
-  void draw(GUI &gui, float gridSize, float gridStep) const
+  // Call once per frame, before drawing scene content.
+  void draw(GUI &gui) const
   {
     if (m_type == WorldType::SPACE)
       drawStars(gui);
 
     if (m_type == WorldType::EARTH)
       drawGround(gui);
-
-    drawGrid(gui, gridSize, gridStep);
   }
 
 private:
@@ -120,22 +120,4 @@ private:
     gui.drawInfiniteGroundPlane(grassColor, kSkyColor, 0.0f, kGroundMaxDistance);
   }
 
-  void drawGrid(GUI &gui, float size, float step) const
-  {
-    const bool onGround = (m_type == WorldType::EARTH);
-    const glm::vec3 gridColor = onGround ? glm::vec3(0.1f, 0.3f, 0.12f)
-                                          : glm::vec3(0.16f, 0.18f, 0.24f);
-    const glm::vec3 axisColorX{0.55f, 0.2f, 0.22f};
-    const glm::vec3 axisColorY{0.22f, 0.48f, 0.28f};
-    const float z = onGround ? 0.02f : 0.0f; // avoid z-fighting with the ground fill
-
-    for (float i = -size; i <= size; i += step)
-    {
-      glm::vec3 colorX = (i == 0.0f) ? axisColorX : gridColor;
-      glm::vec3 colorY = (i == 0.0f) ? axisColorY : gridColor;
-
-      gui.drawLine({i, -size, z}, {i, size, z}, colorX);
-      gui.drawLine({-size, i, z}, {size, i, z}, colorY);
-    }
-  }
 };

@@ -233,9 +233,13 @@ namespace Config
   constexpr float ZOOM_SENSITIVITY = 1.0f;
   constexpr float PAN_SENSITIVITY = 0.2f;
 
-  // Grid
-  constexpr float GRID_SIZE = 5.0f;
-  constexpr float GRID_STEP = 1.0f;
+  // Coordinate grid: three walls of a box (floor + two back walls) meeting
+  // at a corner behind/below the satellite, acting as a visual coordinate
+  // reference rather than an infinite ground plane -- sized against the
+  // 10cm cubesat itself (half-size a few times its 0.25m body-axis arrows),
+  // not the old 5m/1m ground-plane scale that dwarfed it.
+  constexpr float GRID_HALF_SIZE = 0.4f;
+  constexpr float GRID_STEP = 0.05f;
 
   // Plot panel (world space, Y=-1.5 plane, X in [-0.5, 0.5], Z up)
   const glm::vec3 PLOT_ORIGIN{-0.5f, -1.5f, 0.0f};
@@ -285,6 +289,64 @@ struct SensorTelemetry
 // ---------------------------------------------------------------------------
 // Draw helpers
 // ---------------------------------------------------------------------------
+
+// Draws one axis-aligned grid plane: a fine lattice of lines over the two
+// "free" axes, held fixed at `fixedOffset` along the third (`fixedAxis`,
+// 0=X/1=Y/2=Z), spanning [-halfSize, halfSize] around `center` in the free
+// axes. The line running through each free axis's zero -- i.e. the pair
+// that crosses directly behind/below `center` -- is drawn in that axis's
+// own color instead of the faint grid color, so the two axis-color lines
+// on every wall read as "this plane's local coordinate cross," the same
+// role the colored line-through-the-origin played in the old single-plane
+// ground grid.
+static void drawGridPlane(GUI &gui, const glm::vec3 &center, int fixedAxis, float fixedOffset,
+                          float halfSize, float step, const glm::vec3 &gridColor,
+                          const glm::vec3 &axisColorU, const glm::vec3 &axisColorV)
+{
+  int u = (fixedAxis + 1) % 3;
+  int v = (fixedAxis + 2) % 3;
+
+  for (float i = -halfSize; i <= halfSize + 1e-4f; i += step)
+  {
+    bool onAxis = std::abs(i) < 1e-4f;
+
+    glm::vec3 p0(0.0f), p1(0.0f);
+    p0[fixedAxis] = p1[fixedAxis] = fixedOffset;
+    p0[u] = p1[u] = i;
+    p0[v] = -halfSize;
+    p1[v] = halfSize;
+    gui.drawLine(center + p0, center + p1, onAxis ? axisColorU : gridColor);
+
+    glm::vec3 q0(0.0f), q1(0.0f);
+    q0[fixedAxis] = q1[fixedAxis] = fixedOffset;
+    q0[v] = q1[v] = i;
+    q0[u] = -halfSize;
+    q1[u] = halfSize;
+    gui.drawLine(center + q0, center + q1, onAxis ? axisColorV : gridColor);
+  }
+}
+
+// Three walls of a box -- floor, back wall, side wall -- meeting at the
+// corner behind/below `center`, standing in for a coordinate grid at this
+// scenario's own (tiny, 10cm-cubesat) scale rather than the far larger
+// ground-plane grid most other scenarios want. Colors match the body-axis
+// arrows drawSatelliteWireframe() draws (X red, Y green, Z blue) so the
+// grid reads as an extension of the satellite's own body frame, not an
+// unrelated backdrop.
+static void drawSatelliteCoordinateBox(GUI &gui, const glm::vec3 &center, float halfSize, float step)
+{
+  const glm::vec3 gridColor{0.16f, 0.19f, 0.26f};
+  const glm::vec3 axisColorX{0.75f, 0.3f, 0.32f};
+  const glm::vec3 axisColorY{0.32f, 0.68f, 0.4f};
+  const glm::vec3 axisColorZ{0.32f, 0.48f, 0.85f};
+
+  // Floor (Z fixed, below center)
+  drawGridPlane(gui, center, 2, -halfSize, halfSize, step, gridColor, axisColorX, axisColorY);
+  // Back wall (Y fixed, behind center)
+  drawGridPlane(gui, center, 1, -halfSize, halfSize, step, gridColor, axisColorX, axisColorZ);
+  // Side wall (X fixed, behind center)
+  drawGridPlane(gui, center, 0, -halfSize, halfSize, step, gridColor, axisColorY, axisColorZ);
+}
 
 // Body drawn as a 12-edge wireframe box instead of a solid box.
 void drawSatelliteWireframe(GUI &gui, RigidBody *sat)
@@ -976,20 +1038,23 @@ int main()
       .setClipPlanes(Config::CAMERA_NEAR, Config::CAMERA_FAR)
       .setFOV(Config::CAMERA_FOV);
 
+  PhysicsWorld world;
+  HardwareConfig hwConfig;
+  Cubesat sat = buildCubesatPyramid(world, hwConfig);
+
+  // Built after the satellite so the orbit target can start on its actual
+  // position rather than a magic-number guess at where buildCubesatPyramid()
+  // happens to place it.
   OrbitalCamera orbit(
       Config::CAMERA_INITIAL_DISTANCE,
       45.0f, 0.0f,
-      {0, 0, 0.3});
+      sat.body->position);
   orbit.setMaxDistance(Config::CAMERA_MAX_DISTANCE)
       .setMinDistance(Config::CAMERA_MIN_DISTANCE)
       .setZoomSensitivity(Config::ZOOM_SENSITIVITY)
       .setPanSensitivity(Config::PAN_SENSITIVITY);
 
   glm::vec2 lastMousePos = gui.getMousePosition();
-
-  PhysicsWorld world;
-  HardwareConfig hwConfig;
-  Cubesat sat = buildCubesatPyramid(world, hwConfig);
 
   // Flight software: ADCS is hardware-abstracted (see FlightTypes.h) --
   // configure() gives it a fixed hardware description and an initial
@@ -1157,7 +1222,8 @@ int main()
     // =================== DRAW ===================
     gui.beginFrame();
     imguiLayer.beginFrame();
-    scene.draw(gui, Config::GRID_SIZE, Config::GRID_STEP);
+    scene.draw(gui);
+    drawSatelliteCoordinateBox(gui, sat.body->position, Config::GRID_HALF_SIZE, Config::GRID_STEP);
     drawSatelliteWireframe(gui, sat.body);
     drawReactionWheels(gui, sat.wheels, sat.body);
     drawMagnetorquers(gui, sat.magnetorquers, sat.body);
