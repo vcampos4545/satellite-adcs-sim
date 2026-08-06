@@ -33,7 +33,7 @@ FetchContent_MakeAvailable(vgl)
 
 # Dear ImGui -- telemetry/control panels. Fetched/built here directly
 # (not by VGL, which stays generic and has no ImGui dependency) -- see
-# src/common/ImGuiLayer.h for the RAII wrapper that brackets VGL's own
+# src/ImGuiLayer.h for the RAII wrapper that brackets VGL's own
 # frame calls with it.
 #
 # find_package(glfw3) was already called above, but FetchContent_

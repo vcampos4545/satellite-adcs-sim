@@ -160,6 +160,8 @@ FSWOutputs ADCS::step(const FSWInputs &in, float dt)
 {
   lastGyroBody = in.imu.gyro;
   lastAccelBody = in.imu.accel;
+  batterySoc = in.power.batterySoc;
+  batteryVoltageV = in.power.batteryVoltageV;
 
   // EKF predict: propagates estimatedAttitude via bias-corrected strapdown
   // integration and grows the covariance -- see propagateEstimator().
@@ -226,6 +228,7 @@ FSWOutputs ADCS::step(const FSWInputs &in, float dt)
   fdirIn.wheelTelemetry = in.wheelTelemetry;
   fdirIn.attitudeUncertaintyDeg = attitudeUncertaintyDeg;
   fdirIn.rateBody = rate;
+  fdirIn.batterySoc = batterySoc;
   fdirIn.commandedMode = mode;
   effectiveMode = fdir.evaluate(fdirIn, dt);
 

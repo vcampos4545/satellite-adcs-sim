@@ -11,8 +11,8 @@
 // to step in and force a safer one -- the same job a real FSW's "mode
 // manager"/"health monitor" task does, just scoped to what this project's
 // sensor/actuator set can actually detect (wheel health telemetry, EKF
-// confidence, and body rate; nothing about power/thermal/comm, since none
-// of that is modeled here).
+// confidence, body rate, and battery state of charge; nothing about
+// thermal/comm, since none of that is modeled here).
 //
 // Hardware-abstracted like ADCS (see FlightTypes.h): FdirInputs is plain
 // data, evaluate() returns a plain PointingMode recommendation. No dynamic
@@ -29,6 +29,7 @@ enum FdirFaultFlags : uint32_t
   FDIR_FAULT_WHEEL_AUTHORITY_LOST = 1u << 0, // fewer than minHealthyWheels healthy -- pyramid can't reliably span all 3 axes anymore
   FDIR_FAULT_ATTITUDE_UNCERTAIN = 1u << 1,   // EKF confidence too low for too long -- no attitude worth controlling against
   FDIR_FAULT_EXCESS_RATE = 1u << 2,          // body rate outside the attitude controller's design envelope
+  FDIR_FAULT_LOW_BATTERY = 1u << 3,          // state of charge below lowBatterySocTrigger
 };
 
 enum class FdirState
@@ -42,6 +43,7 @@ struct FdirInputs
   std::array<WheelTelemetry, NUM_WHEELS> wheelTelemetry{};
   float attitudeUncertaintyDeg = 0.0f;
   glm::vec3 rateBody{0.0f};                          // bias-corrected body rate (rad/s)
+  float batterySoc = 1.0f;                           // 0-1, state of charge
   PointingMode commandedMode = PointingMode::TARGET; // what ground/UI last asked for
 };
 
@@ -68,6 +70,7 @@ public:
   float attitudeUncertaintyTriggerDeg = 5.0f;    // 1-sigma uncertainty above this starts the sustain timer
   float attitudeUncertaintySustainedS = 5.0f;    // ...and it has to stay above that long before actually faulting
   float excessRateRadS = 2.0f;                   // body rate above this is outside the controller's tuned envelope
+  float lowBatterySocTrigger = 0.2f;             // state of charge below this trips immediately -- SOC doesn't jitter like a sensor reading, no sustain needed
 
   static constexpr int EVENT_LOG_CAPACITY = 16;
   std::array<FdirEvent, EVENT_LOG_CAPACITY> eventLog{};

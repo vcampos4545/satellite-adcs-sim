@@ -143,6 +143,11 @@ public:
   glm::vec3 magFieldBody{0.0f};
   glm::vec3 magFieldRateBody{0.0f};
 
+  // Most recent EPS reading -- exposed for telemetry/UI (and what fdir's
+  // low-battery fault is computed from, see step()).
+  float batterySoc = 1.0f;
+  float batteryVoltageV = 0.0f;
+
   // 1-sigma sun-sensor angular uncertainty (radians) this class assumes
   // when weighting the TRIAD fallback measurement -- a configured sensor
   // spec (matching the harness's SunSensor default), not something read

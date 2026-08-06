@@ -28,6 +28,9 @@ PointingMode FDIR::evaluate(const FdirInputs &in, float dt)
   if (glm::length(in.rateBody) > excessRateRadS)
     detected |= FDIR_FAULT_EXCESS_RATE;
 
+  if (in.batterySoc < lowBatterySocTrigger)
+    detected |= FDIR_FAULT_LOW_BATTERY;
+
   // Latch: once tripped, a fault stays active even if the underlying
   // condition clears on its own, until clearLatchedFaults() explicitly
   // acknowledges it -- see the header comment on why.
@@ -56,7 +59,10 @@ PointingMode FDIR::evaluate(const FdirInputs &in, float dt)
   // -- stop trying to do the mission, hold a stable, low-precision
   // attitude that doesn't depend on the condition that tripped (sun
   // direction is independent of wheel count and tolerant of a noisier
-  // attitude estimate than fine pointing needs).
+  // attitude estimate than fine pointing needs). For a low-battery fault
+  // specifically this is also literally the correct real-world response,
+  // not just a fallback: sun-pointing maximizes solar generation, the same
+  // reason real spacecraft "safe mode" almost always means sun-pointing.
   return PointingMode::SUN_POINTING;
 }
 

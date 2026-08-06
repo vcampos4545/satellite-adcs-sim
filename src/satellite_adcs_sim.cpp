@@ -7,10 +7,12 @@
 #include <rigidbody/sensors/StarTracker.h>
 #include <rigidbody/sensors/SunSensor.h>
 #include <rigidbody/environment/MagneticField.h>
+#include <rigidbody/power/SolarPanel.h>
+#include <rigidbody/power/Battery.h>
 #include "ADCS.h"
 #include "FlightTypes.h"
-#include "common/ImGuiLayer.h"
-#include "common/Telemetry.h"
+#include "ImGuiLayer.h"
+#include "Telemetry.h"
 #include <random>
 #include <memory>
 #include <cmath>
@@ -44,6 +46,8 @@ struct Cubesat
   Magnetometer magnetometer;
   StarTracker starTracker; // boresight set in buildCubesatPyramid()
   SunSensor sunSensor;
+  std::vector<SolarPanel> solarPanels; // one per body face -- see buildCubesatPyramid()
+  Battery battery;
 };
 
 // Builds the simulated hardware AND the matching HardwareConfig ADCS::
@@ -125,6 +129,28 @@ static Cubesat buildCubesatPyramid(PhysicsWorld &world, HardwareConfig &outHw)
   // so it isn't staring straight at whatever TARGET/SUN_POINTING/NADIR is
   // currently pointing +Z toward. Real placement follows the same logic:
   // keep the tracker away from the sun-facing/payload side.
+
+  // Solar panels: one body-mounted cell array per face, the standard
+  // cubesat layout (vs. a single sun-tracking array) -- whichever face(s)
+  // happen to be sunward generate, the rest don't, so generation is a
+  // direct function of attitude rather than something a gimbal hides.
+  // Each face gets the full 10x10cm side as its cell area; ~28% is a
+  // representative conversion efficiency for a triple-junction cubesat
+  // cell (vs. ~20% for cheaper silicon).
+  const float panelAreaM2 = sat.body->size.x * sat.body->size.y; // one 10cm x 10cm face
+  const float panelEfficiency = 0.28f;
+  const glm::vec3 panelNormals[6] = {
+      {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+  for (const glm::vec3 &n : panelNormals)
+    sat.solarPanels.emplace_back(n, panelAreaM2, panelEfficiency);
+
+  // Battery: a representative small Li-ion pack for a 1U-class cubesat --
+  // enough capacity that nominal operation trends toward full charge (this
+  // sim has no orbital eclipse model, so there's no shadow period to drain
+  // it against), while still being small enough that a deliberately harsh
+  // test (Simulation tab's "Drain Battery" button, or a long run with poor
+  // sun-facing geometry) can bring it down to FDIR's low-battery threshold.
+  sat.battery = Battery(10.0f /* Wh */, 6.0f /* V empty */, 8.4f /* V full */, 0.8f /* initial SOC */);
 
   outHw.busInertiaTensor = sat.body->inertiaTensor;
 
@@ -264,6 +290,36 @@ namespace Config
   const glm::vec3 MIRROR_SIZE{0.09f, 0.09f, 0.003f}; // thin along its own normal (local Z)
   const glm::vec3 MIRROR_NORMAL_BODY{0.0f, 0.0f, 1.0f};
   constexpr float REFLECTED_RAY_LENGTH = 1.0f;
+
+  // EPS (electrical power subsystem) power budget: representative
+  // wattages for every load on the bus, summed each ADCS cycle against
+  // what the solar panels generate that same cycle -- see the FLIGHT
+  // SOFTWARE block in main(). No orbital eclipse model exists in this sim,
+  // so there's no shadow term; the sun is always "up" from wherever it's
+  // currently placed.
+  constexpr float SOLAR_FLUX_WM2 = 1361.0f; // solar constant at 1 AU
+
+  constexpr float POWER_OBC_BASELINE_W = 0.4f; // onboard computer + FSW housekeeping, always on
+  constexpr float POWER_IMU_W = 0.05f;
+  constexpr float POWER_MAGNETOMETER_W = 0.03f;
+  constexpr float POWER_STAR_TRACKER_W = 0.35f; // star trackers are the power-hungriest sensor on a cubesat bus
+  constexpr float POWER_SUN_SENSOR_W = 0.01f;
+
+  // Reaction wheel: a small standby/electronics draw per wheel regardless
+  // of command, plus mechanical power (torque * speed) over an assumed
+  // motor efficiency -- the same "idle + effort-proportional" shape a real
+  // motor draws, not a flat number that ignores what the wheel is actually
+  // being asked to do.
+  constexpr float WHEEL_IDLE_POWER_W = 0.02f;
+  constexpr float WHEEL_MOTOR_EFFICIENCY = 0.6f;
+
+  // Magnetorquer: idle electronics draw plus a resistive coil term
+  // proportional to the commanded dipole moment (a real rod's power is
+  // I^2*R, i.e. proportional to moment^2, but a linear approximation is
+  // close enough at these scales and avoids implying more precision about
+  // the coil's actual resistance than this project has any basis for).
+  constexpr float TORQUER_IDLE_POWER_W = 0.01f;
+  constexpr float TORQUER_POWER_PER_AM2_W = 0.5f;
 }
 
 // ---------------------------------------------------------------------------
@@ -279,10 +335,13 @@ struct SensorTelemetry
   TelemetryChannel magFieldMagUt;
   TelemetryChannel estimatedPointingErrorDeg; // what the FSW itself computes/would act on
   TelemetryChannel truePointingErrorDeg;      // ground truth, diagnostic only
+  TelemetryChannel batterySocPct;
+  TelemetryChannel netPowerW; // generation minus consumption -- positive charges, negative discharges
 
   explicit SensorTelemetry(int samples)
       : gyroMagDegS(samples), accelMagMs2(samples), magFieldMagUt(samples),
-        estimatedPointingErrorDeg(samples), truePointingErrorDeg(samples) {}
+        estimatedPointingErrorDeg(samples), truePointingErrorDeg(samples),
+        batterySocPct(samples), netPowerW(samples) {}
 };
 
 // ---------------------------------------------------------------------------
@@ -825,6 +884,8 @@ static const char *fdirFaultName(uint32_t flag)
     return "Attitude uncertain";
   case FDIR_FAULT_EXCESS_RATE:
     return "Excess body rate";
+  case FDIR_FAULT_LOW_BATTERY:
+    return "Low battery";
   default:
     return "Unknown";
   }
@@ -885,6 +946,7 @@ static void drawFdirTab(ADCS &adcs)
   ImGui::DragFloat("Uncertainty trigger (deg)", &fdir.attitudeUncertaintyTriggerDeg, 0.1f, 0.1f, 45.0f, "%.1f");
   ImGui::DragFloat("Uncertainty sustain (s)", &fdir.attitudeUncertaintySustainedS, 0.5f, 0.0f, 60.0f, "%.1f");
   ImGui::DragFloat("Excess rate (rad/s)", &fdir.excessRateRadS, 0.05f, 0.1f, 10.0f, "%.2f");
+  ImGui::DragFloat("Low battery trigger (fraction)", &fdir.lowBatterySocTrigger, 0.01f, 0.0f, 1.0f, "%.2f");
 
   ImGui::SeparatorText("Event Log (newest first)");
   if (fdir.eventCount == 0)
@@ -897,6 +959,53 @@ static void drawFdirTab(ADCS &adcs)
     ImVec4 color = ev.entering ? ImVec4(1.0f, 0.4f, 0.2f, 1.0f) : ImVec4(0.5f, 0.8f, 1.0f, 1.0f);
     ImGui::TextColored(color, "[t=%7.1fs] %s: %s", ev.missionTimeS, ev.entering ? "TRIPPED" : "CLEARED", flagsBuf);
   }
+}
+
+// EPS (electrical power subsystem): battery state, live solar generation
+// per panel, and the same net-power/SOC plots the FSW-cycle telemetry
+// below is pushed to -- the electrical equivalent of the Sensors/Actuators
+// tabs, showing what's actually happening on the bus rather than what FSW
+// perceives (there's no EPS "sensor model" with its own noise/dropouts in
+// this project -- battery telemetry is read directly, see PowerSample's
+// header comment).
+static void drawEpsTab(Cubesat &sat, ADCS &adcs, SensorTelemetry &telemetry)
+{
+  float soc = sat.battery.stateOfCharge();
+  ImVec4 socColor = soc > 0.5f ? ImVec4(0.3f, 1.0f, 0.4f, 1.0f)
+                    : soc > 0.2f ? ImVec4(1.0f, 0.8f, 0.2f, 1.0f)
+                                 : ImVec4(1.0f, 0.3f, 0.2f, 1.0f);
+
+  ImGui::SeparatorText("Battery");
+  ImGui::TextColored(socColor, "State of charge: %.1f%%", soc * 100.0f);
+  plotChannel("State of charge", telemetry.batterySocPct, "%");
+  ImGui::Text("Voltage: %.2f V", sat.battery.voltage());
+  ImGui::Text("Energy: %.1f / %.1f Wh", sat.battery.energyJ / 3600.0f, sat.battery.capacityJ / 3600.0f);
+  ImGui::Text("Net power: %.2f W", telemetry.netPowerW.last());
+  plotChannel("Net power", telemetry.netPowerW, "W");
+  if (sat.battery.isDepleted())
+    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.2f, 1.0f), "DEPLETED");
+
+  ImGui::TextDisabled("Testing:");
+  ImGui::SameLine();
+  if (ImGui::Button("Drain to 15%"))
+    sat.battery.energyJ = 0.15f * sat.battery.capacityJ;
+  ImGui::SameLine();
+  if (ImGui::Button("Full charge"))
+    sat.battery.energyJ = sat.battery.capacityJ;
+
+  ImGui::SeparatorText("Solar Panels");
+  glm::vec3 sunDirWorld = adcs.sunPosition - sat.body->position;
+  float totalGenW = 0.0f;
+  static const char *panelNames[6] = {"+X", "-X", "+Y", "-Y", "+Z", "-Z"};
+  for (size_t i = 0; i < sat.solarPanels.size(); i++)
+  {
+    SolarPanel::Reading r = sat.solarPanels[i].sample(*sat.body, sunDirWorld, Config::SOLAR_FLUX_WM2);
+    totalGenW += r.powerW;
+    const char *name = i < 6 ? panelNames[i] : "?";
+    ImGui::Text("%s face: %5.2f W  (incidence %5.1f deg)", name, r.powerW, r.incidenceAngleDeg);
+  }
+  ImGui::Text("Total generation: %.2f W", totalGenW);
+  ImGui::TextDisabled("No orbital eclipse model -- the sun is always \"up,\" generation only depends on attitude.");
 }
 
 // Simulation-level knobs, as opposed to ADCS/FSW state -- things that
@@ -969,10 +1078,9 @@ static void drawSimulationTab(SimControls &sim, WheelFaultInjector &faultInjecto
 // manual-override controls), and Simulation (test-harness controls that
 // aren't part of the spacecraft itself: pause, induced tumbles, and the
 // reaction wheel fault injector).
-static void drawADCSPanel(ADCS &adcs, std::vector<ReactionWheel *> &wheels,
-                          const std::vector<Magnetorquer *> &magnetorquers,
+static void drawADCSPanel(ADCS &adcs, Cubesat &sat,
                           SensorTelemetry &telemetry, SimControls &sim,
-                          WheelFaultInjector &faultInjector, RigidBody *body,
+                          WheelFaultInjector &faultInjector,
                           float trueErrDeg)
 {
   ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
@@ -993,7 +1101,7 @@ static void drawADCSPanel(ADCS &adcs, std::vector<ReactionWheel *> &wheels,
     }
     if (ImGui::BeginTabItem("Actuators"))
     {
-      drawActuatorsTab(adcs, wheels, magnetorquers);
+      drawActuatorsTab(adcs, sat.wheels, sat.magnetorquers);
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("FDIR"))
@@ -1001,9 +1109,14 @@ static void drawADCSPanel(ADCS &adcs, std::vector<ReactionWheel *> &wheels,
       drawFdirTab(adcs);
       ImGui::EndTabItem();
     }
+    if (ImGui::BeginTabItem("EPS"))
+    {
+      drawEpsTab(sat, adcs, telemetry);
+      ImGui::EndTabItem();
+    }
     if (ImGui::BeginTabItem("Simulation"))
     {
-      drawSimulationTab(sim, faultInjector, wheels, body, adcs);
+      drawSimulationTab(sim, faultInjector, sat.wheels, sat.body, adcs);
       ImGui::EndTabItem();
     }
     ImGui::EndTabBar();
@@ -1178,6 +1291,12 @@ int main()
         inputs.mag = {magReading.field, true};
         inputs.star = {starReading.attitude, starReading.valid};
         inputs.sunSensor = {sunReading.sunDirBody, sunReading.valid};
+        // Last-known EPS telemetry -- this cycle's own consumption (wheels/
+        // torquers, computed below from what step() is about to command)
+        // hasn't happened yet, same "read before this cycle's effects"
+        // relationship inputs.wheelTelemetry[i].speedRadS already has with
+        // the wheel commands step() is about to issue.
+        inputs.power = {sat.battery.stateOfCharge(), sat.battery.voltage()};
         for (int i = 0; i < NUM_WHEELS; i++)
           inputs.wheelTelemetry[i] = {sat.wheels[i]->currentSpeed, sat.wheels[i]->healthFactor > 0.01f};
         inputs.spacecraftPositionWorld = sat.body->position; // stands in for a real nav solution (no GPS/ephemeris modeled)
@@ -1188,6 +1307,30 @@ int main()
           sat.wheels[i]->commandTorque(out.wheelCommands[i].torqueNm);
         for (int i = 0; i < NUM_TORQUERS; i++)
           sat.magnetorquers[i]->commandDipoleMoment(out.torquerCommands[i].momentAm2);
+
+        // =================== EPS (same 20 Hz cycle) ===================
+        // Generation: sum every panel's cosine-law output against the same
+        // sun direction the star tracker/sun sensor were just sampled
+        // against. Consumption: a fixed housekeeping/sensor draw plus each
+        // actuator's idle-plus-effort power for the commands just issued
+        // above -- see the Config::POWER_* comments for the model each
+        // term follows. Net power integrates straight into the battery.
+        float genW = 0.0f;
+        for (const SolarPanel &panel : sat.solarPanels)
+          genW += panel.sample(*sat.body, sunDirWorld, Config::SOLAR_FLUX_WM2).powerW;
+
+        float drawW = Config::POWER_OBC_BASELINE_W + Config::POWER_IMU_W +
+                      Config::POWER_MAGNETOMETER_W + Config::POWER_STAR_TRACKER_W +
+                      Config::POWER_SUN_SENSOR_W;
+        for (int i = 0; i < NUM_WHEELS; i++)
+          drawW += Config::WHEEL_IDLE_POWER_W +
+                   std::abs(out.wheelCommands[i].torqueNm * sat.wheels[i]->currentSpeed) / Config::WHEEL_MOTOR_EFFICIENCY;
+        for (int i = 0; i < NUM_TORQUERS; i++)
+          drawW += Config::TORQUER_IDLE_POWER_W +
+                   std::abs(out.torquerCommands[i].momentAm2) * Config::TORQUER_POWER_PER_AM2_W;
+
+        sat.battery.update(genW - drawW, adcsTimer);
+        telemetry.netPowerW.push(genW - drawW);
 
         adcsTimer = 0.0f;
 
@@ -1207,6 +1350,7 @@ int main()
         telemetry.magFieldMagUt.push(glm::length(adcs.magFieldBody) * 1e6f);
         telemetry.estimatedPointingErrorDeg.push(adcs.estimatedPointingErrorDeg);
         telemetry.truePointingErrorDeg.push(trueErrDeg);
+        telemetry.batterySocPct.push(sat.battery.stateOfCharge() * 100.0f);
       }
 
       if (sim.faultInjectionEnabled)
@@ -1245,7 +1389,7 @@ int main()
     gui.drawLine(sat.body->position, adcs.target, {0, 1.0f, 0});
     gui.drawLine(sat.body->position, adcs.sunPosition, {1.0f, 0.9f, 0.1f});
 
-    drawADCSPanel(adcs, sat.wheels, sat.magnetorquers, telemetry, sim, faultInjector, sat.body, trueErrDeg);
+    drawADCSPanel(adcs, sat, telemetry, sim, faultInjector, trueErrDeg);
 
     imguiLayer.endFrame();
     gui.endFrame();

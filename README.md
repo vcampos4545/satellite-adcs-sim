@@ -18,11 +18,13 @@ This project itself builds on [spacecraft-dynamics-sim](https://github.com/vcamp
 - Cross-product-law momentum desaturation, running automatically in the background (not a mode) whenever wheel saturation gets close, with headroom-aware gain scaling so the desaturation maneuver itself can't destabilize pointing.
 - Randomly-occurring wheel faults (degraded or dead) the allocator has to route around.
 
-**FDIR / mode manager**: an autonomous fault-detection layer that runs every FSW cycle above guidance/control — the same "mode manager" vs. "GNC" split a real flight computer's task structure has. It watches wheel health telemetry, the EKF's own confidence, and body rate, and can override the commanded pointing mode with a safe one (Sun-pointing, or Detumble first if the rate itself is out of the controller's envelope) without waiting for ground intervention. Faults latch until explicitly acknowledged, autonomy itself is ground-inhibitable, and every trip/clear is timestamped in an onboard event log.
+**EPS (electrical power subsystem)**: a body-mounted solar panel on each of the 6 faces (standard cubesat layout — whichever face happens to be sunward generates, no gimbal), each following the standard cosine law against the current sun direction and attitude, feeding a Coulomb-counting battery model. Every actuator/sensor draws a representative, physically-motivated amount of power each FSW cycle (wheels/magnetorquers scale with commanded effort, not a flat number) and is debited against the battery alongside whatever the panels generated that cycle — the battery's state of charge is a real consequence of what the spacecraft is doing, not a cosmetic number.
+
+**FDIR / mode manager**: an autonomous fault-detection layer that runs every FSW cycle above guidance/control — the same "mode manager" vs. "GNC" split a real flight computer's task structure has. It watches wheel health telemetry, the EKF's own confidence, body rate, and battery state of charge, and can override the commanded pointing mode with a safe one (Sun-pointing — which also happens to maximize solar generation — or Detumble first if the rate itself is out of the controller's envelope) without waiting for ground intervention. Faults latch until explicitly acknowledged, autonomy itself is ground-inhibitable, and every trip/clear is timestamped in an onboard event log.
 
 **Pointing modes**: Nadir, Sun-pointing, Detumble, Target, Slew (fast/coarse), Fine-pointing (slow/precise), and Reflect (aims the +Z mirror's normal to bounce sunlight onto `target` instead of pointing at it directly) — each with its own gain/rate-limit tuning rather than one-size-fits-all.
 
-**GUI**: a single tabbed panel (FSW / Sensors / Actuators / FDIR / Simulation) covering live gain tuning, sensor telemetry with rolling plots, per-actuator status and manual override, FDIR status/thresholds/event log, and simulation controls (pause, induced tumbles, fault injection, forced desaturation) — plus a 3D view with sun/target pointing-error lines, magnetic field visualization, and (for fun) a mirror on the +Z face showing sun-reflection geometry with the sun sized to its real ~32 arcminute angular diameter.
+**GUI**: a single tabbed panel (FSW / Sensors / Actuators / FDIR / EPS / Simulation) covering live gain tuning, sensor telemetry with rolling plots, per-actuator status and manual override, FDIR status/thresholds/event log, battery/solar-generation telemetry, and simulation controls (pause, induced tumbles, fault injection, forced desaturation) — plus a 3D view with sun/target pointing-error lines, magnetic field visualization, and (for fun) a mirror on the +Z face showing sun-reflection geometry with the sun sized to its real ~32 arcminute angular diameter.
 
 ## Build
 
@@ -43,8 +45,8 @@ Fetches `rigidbody` (spacecraft-dynamics-sim), VGL, and Dear ImGui from GitHub �
 
 | Key | Action |
 |---|---|
-| `1`-`6` | Pointing mode: Nadir / Sun / Detumble / Target / Slew / Fine |
-| `Space` | New random target (Target/Slew/Fine modes) |
+| `1`-`7` | Pointing mode: Nadir / Sun / Detumble / Target / Slew / Fine / Reflect |
+| `Space` | New random target (Target/Slew/Fine/Reflect modes) |
 | `T` | Kick the body into a random tumble (to test Detumble) |
 | `F` | Force a wheel fault immediately (faults also occur on their own) |
 | Left-drag | Orbit camera |
