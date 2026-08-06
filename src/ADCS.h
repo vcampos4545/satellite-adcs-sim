@@ -18,6 +18,7 @@ enum class PointingMode
   TARGET,        // body +Z toward `target`, default tuning
   SLEW,          // body +Z toward `target`, tuned for a fast large-angle move
   FINE_POINTING, // body +Z toward `target`, tuned for a slow, precise settle
+  REFLECT,       // body +Z (the mirror's normal) bisects sun and target -- bounces sunlight onto `target`
 };
 
 enum class ControllerType

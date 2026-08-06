@@ -20,7 +20,7 @@
 #include <glm/gtc/constants.hpp>
 
 // ---------------------------------------------------------------------------
-// Full cubesat ADCS: pointing modes (Nadir/Sun/Detumble/Target/Slew/Fine),
+// Full cubesat ADCS: pointing modes (Nadir/Sun/Detumble/Target/Slew/Fine/Reflect),
 // an IMU and magnetometer as the only sensors the flight software ever
 // reads (see ADCS.h/.cpp), a 4-wheel reaction wheel pyramid plus a 3-axis
 // magnetorquer cluster as actuators, and randomly-occurring reaction wheel
@@ -30,8 +30,8 @@
 // panel's Detumble Actuator selector.
 //
 // Controls:
-//   [1-6]   pointing mode: Nadir / Sun / Detumble / Target / Slew / Fine
-//   [Space] new random target (for Target/Slew/Fine modes)
+//   [1-7]   pointing mode: Nadir / Sun / Detumble / Target / Slew / Fine / Reflect
+//   [Space] new random target (for Target/Slew/Fine/Reflect modes)
 //   [T]     kick the body into a random tumble (to test Detumble)
 //   [F]     force a wheel fault immediately (faults also occur on their own)
 // ---------------------------------------------------------------------------
@@ -85,9 +85,9 @@ static Cubesat buildCubesatPyramid(PhysicsWorld &world, HardwareConfig &outHw)
                        mountRadius * std::sin(azimuth),
                        mountHeight);
 
-    const float maxTorqueNm = 0.001f;                                  // same as the 3-wheel cubesat
+    const float maxTorqueNm = 0.001f;                                       // same as the 3-wheel cubesat
     const float maxSpeedRadS = 6000.0f * (2.0f * glm::pi<float>() / 60.0f); // 6000 RPM max
-    const float wheelInertia = 1e-6f;                                  // kg*m^2
+    const float wheelInertia = 1e-6f;                                       // kg*m^2
 
     auto wheel = std::make_unique<ReactionWheel>(mountPos, axis, maxTorqueNm, maxSpeedRadS, wheelInertia);
 
@@ -447,7 +447,7 @@ static void drawSunReflection(GUI &gui, RigidBody *sat, const glm::vec3 &sunPosi
   glm::vec3 normalWorld = glm::normalize(sat->orientation * Config::MIRROR_NORMAL_BODY);
 
   glm::vec3 incidentDir = glm::normalize(mirrorPos - sunPosition); // sun -> mirror
-  gui.drawLine(sunPosition, mirrorPos, {1.0f, 0.9f, 0.1f});
+  gui.drawLine(sunPosition, mirrorPos, {1.0f, 0.5f, 0.9f});
 
   // Front face is illuminated only if the normal points back toward the
   // sun relative to the incoming ray, i.e. dot(normal, -incident) > 0.
@@ -505,6 +505,8 @@ static const char *modeName(PointingMode m)
     return "SLEW";
   case PointingMode::FINE_POINTING:
     return "FINE_POINTING";
+  case PointingMode::REFLECT:
+    return "REFLECT";
   }
   return "?";
 }
@@ -590,7 +592,7 @@ static void torquerStatus(const Magnetorquer *m, const char *&outText, ImVec4 &o
 
 static void drawFswTab(ADCS &adcs, SensorTelemetry &telemetry, float trueErrDeg)
 {
-  static const char *modeNames[] = {"Nadir", "Sun Pointing", "Detumble", "Target", "Slew", "Fine Pointing"};
+  static const char *modeNames[] = {"Nadir", "Sun Pointing", "Detumble", "Target", "Slew", "Fine Pointing", "Reflect"};
   int modeIdx = static_cast<int>(adcs.mode);
   if (ImGui::Combo("Pointing mode", &modeIdx, modeNames, IM_ARRAYSIZE(modeNames)))
     adcs.mode = static_cast<PointingMode>(modeIdx);
@@ -954,6 +956,8 @@ int main()
       adcs.mode = PointingMode::SLEW;
     if (gui.isKeyJustPressed(GLFW_KEY_6))
       adcs.mode = PointingMode::FINE_POINTING;
+    if (gui.isKeyJustPressed(GLFW_KEY_7))
+      adcs.mode = PointingMode::REFLECT;
 
     if (gui.isKeyJustPressed(GLFW_KEY_SPACE))
     {

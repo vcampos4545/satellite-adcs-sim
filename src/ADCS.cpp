@@ -30,6 +30,7 @@ ModeTuning tuningForMode(PointingMode mode)
   case PointingMode::SUN_POINTING:
   case PointingMode::TARGET:
   case PointingMode::DETUMBLE:
+  case PointingMode::REFLECT:
   default:
     return {5.0f, 1.0f, 0.5f};
   }
@@ -253,6 +254,19 @@ void ADCS::computeGuidance(const glm::vec3 &spacecraftPositionWorld, float dt)
   case PointingMode::SUN_POINTING:
     pointDir = glm::normalize(sunPosition - spacecraftPositionWorld);
     break;
+  case PointingMode::REFLECT:
+  {
+    // Aim the mirror's normal (body +Z) so it bounces sunlight onto
+    // `target`. For a flat mirror, the normal that reflects a ray from A
+    // to B is the bisector of the two directions away from the mirror --
+    // normalize(dirToSun + dirToTarget) -- the same law drawSunReflection()
+    // in the harness uses to draw the incident/reflected rays, just solved
+    // for the normal instead of applied to it.
+    glm::vec3 dirToSun = glm::normalize(sunPosition - spacecraftPositionWorld);
+    glm::vec3 dirToTarget = glm::normalize(target - spacecraftPositionWorld);
+    pointDir = glm::normalize(dirToSun + dirToTarget);
+    break;
+  }
   case PointingMode::TARGET:
   case PointingMode::SLEW:
   case PointingMode::FINE_POINTING:
