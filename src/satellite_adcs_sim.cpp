@@ -9,7 +9,6 @@
 #include <rigidbody/environment/MagneticField.h>
 #include "ADCS.h"
 #include "FlightTypes.h"
-#include "common/World.h"
 #include "common/ImGuiLayer.h"
 #include "common/Telemetry.h"
 #include <random>
@@ -238,8 +237,8 @@ namespace Config
   // reference rather than an infinite ground plane -- sized against the
   // 10cm cubesat itself (half-size a few times its 0.25m body-axis arrows),
   // not the old 5m/1m ground-plane scale that dwarfed it.
-  constexpr float GRID_HALF_SIZE = 0.4f;
-  constexpr float GRID_STEP = 0.05f;
+  constexpr float GRID_HALF_SIZE = 3.0f;
+  constexpr float GRID_STEP = 0.5f;
 
   // Plot panel (world space, Y=-1.5 plane, X in [-0.5, 0.5], Z up)
   const glm::vec3 PLOT_ORIGIN{-0.5f, -1.5f, 0.0f};
@@ -343,9 +342,9 @@ static void drawSatelliteCoordinateBox(GUI &gui, const glm::vec3 &center, float 
   // Floor (Z fixed, below center)
   drawGridPlane(gui, center, 2, -halfSize, halfSize, step, gridColor, axisColorX, axisColorY);
   // Back wall (Y fixed, behind center)
-  drawGridPlane(gui, center, 1, -halfSize, halfSize, step, gridColor, axisColorX, axisColorZ);
+  drawGridPlane(gui, center, 1, -halfSize, halfSize, step, gridColor, axisColorY, axisColorZ);
   // Side wall (X fixed, behind center)
-  drawGridPlane(gui, center, 0, -halfSize, halfSize, step, gridColor, axisColorY, axisColorZ);
+  drawGridPlane(gui, center, 0, -halfSize, halfSize, step, gridColor, axisColorZ, axisColorX);
 }
 
 // Body drawn as a 12-edge wireframe box instead of a solid box.
@@ -1031,8 +1030,6 @@ int main()
 {
   GUI gui(800, 600, "CubeSat ADCS (Pyramid RWA)");
   ImGuiLayer imguiLayer(gui);
-  World scene(WorldType::SPACE);
-  scene.apply(gui);
   gui.camera
       .setUp({0, 0, 1})
       .setClipPlanes(Config::CAMERA_NEAR, Config::CAMERA_FAR)
@@ -1222,7 +1219,6 @@ int main()
     // =================== DRAW ===================
     gui.beginFrame();
     imguiLayer.beginFrame();
-    scene.draw(gui);
     drawSatelliteCoordinateBox(gui, sat.body->position, Config::GRID_HALF_SIZE, Config::GRID_STEP);
     drawSatelliteWireframe(gui, sat.body);
     drawReactionWheels(gui, sat.wheels, sat.body);
