@@ -98,6 +98,41 @@ not optional follow-up.
   pointers, use existing math/vector/quaternion (`glm`) types, and match
   existing naming/formatting conventions.
 
+## Comments
+
+Write comments to explain intent, reasoning, assumptions, invariants,
+mathematical/physical relationships, or non-obvious implementation decisions.
+
+Do NOT write comments that merely restate what the code does.
+
+Bad:
+
+    // Increment counter
+    counter++;
+
+Good:
+
+    // Reset the counter after a complete simulation epoch to prevent
+    // floating-point accumulation from affecting long-running runs.
+    counter = 0;
+
+Prefer clear code over comments.
+
+Do not add comments solely because code was modified.
+
+Do not add comments to every function or line.
+
+When modifying existing code, do not rewrite unrelated comments.
+
+For physics and numerical algorithms, document important:
+
+- equations
+- assumptions
+- coordinate frames
+- units
+- numerical stability considerations
+- non-obvious approximations
+
 ## Verification
 
 A task is not complete merely because the code compiles. Verification

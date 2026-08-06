@@ -9,22 +9,18 @@ void PIDController::autoTune(glm::mat3 inertiaTensor,
                              float settlingTime,
                              float dampingRatio)
 {
-  // Average moment of inertia
   float I =
       (inertiaTensor[0][0] +
        inertiaTensor[1][1] +
        inertiaTensor[2][2]) /
       3.0f;
 
-  // Natural frequency
   float omega_n = 4.0f / (dampingRatio * settlingTime);
 
-  // Gains
   Kp = I * omega_n * omega_n;
   Kd = 2.0f * dampingRatio * I * omega_n;
   Ki = Kp * 0.01f;
 
-  // Anti-windup limit
   if (Ki > 0.0f)
   {
     maxIntegral = (Kp / Ki) * 0.5f;
@@ -100,7 +96,6 @@ glm::vec3 CascadedController::computeControlTorque(
   // Axis-angle approximation
   glm::vec3 attitudeError = 2.0f * glm::vec3(q_error.x, q_error.y, q_error.z);
 
-  // Natural frequency from settling time
   float omega_n = 4.0f / (dampingRatio * settlingTime);
 
   // OUTER LOOP: attitude error -> rate command. Positive gain: a positive

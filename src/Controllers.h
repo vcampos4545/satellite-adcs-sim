@@ -6,31 +6,26 @@
 class PIDController
 {
 public:
-  // PID gains
   float Kp = 0.001f;
   float Ki = 0.0001f;
   float Kd = 0.002f;
 
-  // Integral state
   glm::vec3 integralError{0.0f};
   float maxIntegral = 0.1f;
 
 public:
   PIDController() = default;
 
-  // Auto-tune gains based on spacecraft inertia and desired response
   void autoTune(glm::mat3 inertiaTensor,
                 float settlingTime,
                 float dampingRatio);
 
-  // Compute control torque
   glm::vec3 computeControlTorque(
       glm::quat targetAttitude,
       const glm::quat &q_current,
       const glm::vec3 &omega_current,
       float dt);
 
-  // Reset integral state
   void reset();
 };
 
@@ -70,7 +65,6 @@ public:
                 float dampingRatio = 1.0f,
                 float omega_max = 0.5f);
 
-  // Compute control torque
   glm::vec3 computeControlTorque(
       glm::quat targetAttitude,
       const glm::quat &q_current,
@@ -86,9 +80,9 @@ public:
 class CascadedController
 {
 public:
-  float settlingTime = 5.0f; // Desired settling time (seconds)
+  float settlingTime = 5.0f; // seconds
   float dampingRatio = 1.0f; // 1.0 = critically damped
-  float omega_max = 0.5f;    // Commanded rate limit (rad/s)
+  float omega_max = 0.5f;    // rad/s
   glm::mat3 inertiaTensor{1.0f};
 
 public:
