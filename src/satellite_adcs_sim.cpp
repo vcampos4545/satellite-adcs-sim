@@ -14,7 +14,11 @@
 #include <rigidbody/orbit/OrbitFrames.h>
 #include <rigidbody/orbit/OrbitTime.h>
 #include <rigidbody/orbit/SunModel.h>
+#include <rigidbody/orbit/MoonModel.h>
 #include <rigidbody/orbit/EclipseModel.h>
+#include <rigidbody/orbit/ThirdBodyGravity.h>
+#include <rigidbody/orbit/AtmosphericDrag.h>
+#include <rigidbody/orbit/SolarRadiationPressure.h>
 #include <rigidbody/power/SolarPanel.h>
 #include <rigidbody/power/Battery.h>
 #include "ADCS.h"
@@ -240,8 +244,13 @@ namespace Config
   // The near:far ratio this creates (~5e7) needs the logarithmic depth
   // buffer enabled in main() (gui.setLogDepth) to avoid z-fighting a
   // standard depth buffer can't handle at this range.
+  // CAMERA_FAR must clear the real Sun distance (~1.496e11m, 1 AU) with
+  // margin, now that the Sun/Moon are drawn at their real ECI positions
+  // (see main()'s adcs.sunPosition / moonPositionEci) rather than a
+  // scaled-for-visibility stand-in -- otherwise both are silently clipped
+  // by the far plane and never rendered at all.
   constexpr float CAMERA_NEAR = 10.0f;
-  constexpr float CAMERA_FAR = 5.0e8f;
+  constexpr float CAMERA_FAR = 2.0e11f;
   constexpr float CAMERA_FOV = 45.0f;
   constexpr float CAMERA_INITIAL_DISTANCE = SATELLITE_VISUAL_SCALE * 0.8f;
   constexpr float CAMERA_MIN_DISTANCE = SATELLITE_VISUAL_SCALE * 0.5f;
@@ -295,10 +304,20 @@ namespace Config
 
   // The sun's real angular diameter as seen from Earth/LEO, ~32 arcminutes
   // -- the sun marker's radius is sized every frame from this and its
-  // current (arbitrary, scaled-for-visibility) distance from the
-  // satellite, rather than being a fixed prop radius, so it actually
-  // reads as "how big the sun really looks," not just a bright dot.
+  // real current distance from the satellite (adcs.sunPosition is the
+  // real SunModel position, ~1 AU away), rather than being a fixed prop
+  // radius, so it actually reads as "how big the sun really looks," not
+  // just a bright dot.
   constexpr float SUN_ANGULAR_DIAMETER_DEG = 32.0f / 60.0f;
+
+  // Spacecraft mass/cross-section for the truth propagator's atmospheric
+  // drag and solar radiation pressure force models -- matches
+  // buildCubesatPyramid()'s real 1U body (0.1m cube, 1.33kg max mass).
+  // Duplicated here rather than read off `sat.body` because the orbit
+  // force models are constructed once at startup, before the mission
+  // loop that could otherwise keep them in sync with a changing body.
+  constexpr double SPACECRAFT_MASS_KG = 1.33;
+  constexpr double SPACECRAFT_CROSS_SECTION_M2 = 0.1 * 0.1; // one 10x10cm face
 
   // A flat mirror mounted on the +Z face (same axis every pointing mode
   // aims), just for visualizing the sun-reflection geometry -- not wired
@@ -611,16 +630,17 @@ static void drawMagneticField(GUI &gui, const glm::vec3 &fieldWorldT, glm::vec3 
 // Predicted orbit path: propagates a *copy* of the current orbital state
 // forward for one estimated period (vis-viva, from the current
 // position/velocity -- exact for the unperturbed two-body case, a good
-// approximation with J2 included since J2 doesn't secularly change
-// semi-major axis to first order) using the same two-body+J2 force model
-// the real propagator uses, sampling numPoints evenly-spaced points.
-// Returns real ECI-meter points (world origin = Earth's center, matching
+// approximation with the perturbations included since none of them
+// secularly change semi-major axis to first order) using the same force
+// models the real propagator uses (two-body, J2, drag, SRP, Sun/Moon
+// third-body), sampling numPoints evenly-spaced points. Returns real
+// ECI-meter points (world origin = Earth's center, matching
 // PhysicsWorld's own frame here), ready to draw directly. Recomputed
 // periodically (not every frame) by the caller -- see
 // ORBIT_PATH_REFRESH_S -- since nothing here is cheap enough to be worth
 // redoing 60 times a second for a path that only drifts slowly (mainly
 // from J2) cycle to cycle.
-static std::vector<glm::vec3> computePredictedOrbitPath(const OrbitState &current, int numPoints)
+static std::vector<glm::vec3> computePredictedOrbitPath(const OrbitState &current, int numPoints, double epochJd)
 {
   double mu = TwoBodyGravity{}.mu;
   double rMag = glm::length(current.position);
@@ -631,6 +651,17 @@ static std::vector<glm::vec3> computePredictedOrbitPath(const OrbitState &curren
   OrbitPropagator pathPropagator;
   pathPropagator.addForceModel(std::make_unique<TwoBodyGravity>());
   pathPropagator.addForceModel(std::make_unique<J2Perturbation>());
+  pathPropagator.addForceModel(
+      std::make_unique<AtmosphericDrag>(Config::SPACECRAFT_CROSS_SECTION_M2, Config::SPACECRAFT_MASS_KG));
+  auto sunGravity = std::make_unique<ThirdBodyGravity>(ThirdBodyType::Sun);
+  auto moonGravity = std::make_unique<ThirdBodyGravity>(ThirdBodyType::Moon);
+  auto srp = std::make_unique<SolarRadiationPressure>(Config::SPACECRAFT_CROSS_SECTION_M2, Config::SPACECRAFT_MASS_KG);
+  sunGravity->epochJd = epochJd;
+  moonGravity->epochJd = epochJd;
+  srp->epochJd = epochJd;
+  pathPropagator.addForceModel(std::move(sunGravity));
+  pathPropagator.addForceModel(std::move(moonGravity));
+  pathPropagator.addForceModel(std::move(srp));
 
   OrbitState state = current;
   double dt = period / numPoints;
@@ -694,8 +725,8 @@ static void drawWorldAxesGizmo(GUI &gui)
   const ImGuiIO &io = ImGui::GetIO();
   ImDrawList *dl = ImGui::GetForegroundDrawList();
 
-  const float margin = 80.0f; // pixels from the corner
-  const float arm = 50.0f;    // pixel length of each fully-foreshortened axis
+  const float margin = 80.0f;                             // pixels from the corner
+  const float arm = 50.0f;                                // pixel length of each fully-foreshortened axis
   const ImVec2 origin(margin, io.DisplaySize.y - margin); // bottom-left corner
 
   dl->AddCircleFilled(origin, arm * 0.65f, IM_COL32(0, 0, 0, 120), 32);
@@ -886,7 +917,7 @@ static void drawGroundTrackMinimap(const Texture &earthTexture,
   ImVec2 cs = ImGui::GetContentRegionAvail();
 
   ImGui::Image(static_cast<ImTextureID>(static_cast<uintptr_t>(earthTexture.id())),
-              cs, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+               cs, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
 
   ImDrawList *dl = ImGui::GetWindowDrawList();
 
@@ -895,7 +926,7 @@ static void drawGroundTrackMinimap(const Texture &earthTexture,
   auto toScreen = [&](float latDeg, float lonDeg) -> ImVec2
   {
     return ImVec2(cp.x + (lonDeg + 180.0f) / 360.0f * cs.x,
-                 cp.y + (90.0f - latDeg) / 180.0f * cs.y);
+                  cp.y + (90.0f - latDeg) / 180.0f * cs.y);
   };
 
   // Ground-track trail, fading from dim to bright toward the current
@@ -911,7 +942,7 @@ static void drawGroundTrackMinimap(const Texture &earthTexture,
     float age = static_cast<float>(i) / trailCount;
     ImU32 col = IM_COL32(static_cast<int>(20 + 20 * age), static_cast<int>(120 + 135 * age), static_cast<int>(220 - 20 * age), 220);
     dl->AddLine(toScreen(groundTrack[i - 1].x, groundTrack[i - 1].y),
-               toScreen(groundTrack[i].x, groundTrack[i].y), col, 1.5f);
+                toScreen(groundTrack[i].x, groundTrack[i].y), col, 1.5f);
   }
 
   // Footprint circle, projected onto the map -- traced the same way the 3D
@@ -953,8 +984,8 @@ static void drawGroundTrackMinimap(const Texture &earthTexture,
 
   char coordBuf[64];
   std::snprintf(coordBuf, sizeof(coordBuf), "%.2f %s  %.2f %s",
-               std::abs(nowGeo.latDeg), nowGeo.latDeg >= 0 ? "N" : "S",
-               std::abs(nowGeo.lonDeg), nowGeo.lonDeg >= 0 ? "E" : "W");
+                std::abs(nowGeo.latDeg), nowGeo.latDeg >= 0 ? "N" : "S",
+                std::abs(nowGeo.lonDeg), nowGeo.lonDeg >= 0 ? "E" : "W");
   dl->AddText(ImVec2(cp.x + 4.0f, cp.y + cs.y - 16.0f), IM_COL32(220, 220, 220, 220), coordBuf);
 
   ImGui::EndChild();
@@ -1655,8 +1686,29 @@ int main()
   OrbitPropagator orbitPropagator;
   orbitPropagator.addForceModel(std::make_unique<TwoBodyGravity>());
   orbitPropagator.addForceModel(std::make_unique<J2Perturbation>());
+  orbitPropagator.addForceModel(
+      std::make_unique<AtmosphericDrag>(Config::SPACECRAFT_CROSS_SECTION_M2, Config::SPACECRAFT_MASS_KG));
+
+  // ThirdBodyGravity/SolarRadiationPressure need epochJd refreshed every
+  // frame (see their own header comments) since this project's mission
+  // epoch is live-editable from the Simulation tab -- keep raw observing
+  // pointers into the propagator's owned models rather than reconstructing
+  // them, so OrbitPropagator retains sole ownership.
+  auto sunGravityOwned = std::make_unique<ThirdBodyGravity>(ThirdBodyType::Sun);
+  auto moonGravityOwned = std::make_unique<ThirdBodyGravity>(ThirdBodyType::Moon);
+  auto srpOwned = std::make_unique<SolarRadiationPressure>(Config::SPACECRAFT_CROSS_SECTION_M2, Config::SPACECRAFT_MASS_KG);
+  ThirdBodyGravity *sunGravity = sunGravityOwned.get();
+  ThirdBodyGravity *moonGravity = moonGravityOwned.get();
+  SolarRadiationPressure *srp = srpOwned.get();
+  orbitPropagator.addForceModel(std::move(sunGravityOwned));
+  orbitPropagator.addForceModel(std::move(moonGravityOwned));
+  orbitPropagator.addForceModel(std::move(srpOwned));
+
   EpochControls epoch; // editable live from the Simulation tab -- see its own comment
   double missionEpochJd = OrbitTime::julianDate(epoch.year, epoch.month, epoch.day, epoch.hour, epoch.minute, epoch.second);
+  sunGravity->epochJd = missionEpochJd;
+  moonGravity->epochJd = missionEpochJd;
+  srp->epochJd = missionEpochJd;
 
   // Real tilted-dipole field, sampled at orbitState's true position each
   // frame (see below) -- replaces the old MagneticField's fake kinematic
@@ -1672,10 +1724,11 @@ int main()
   glm::vec3 fieldNow{0.0f};                 // last-sampled ambient field; held while paused rather than resampled
   bool inEclipse = false;                   // last-computed shadow state; held while paused
   glm::vec3 earthRelativePositionNow{0.0f}; // orbitState.position cast to float; held while paused
+  glm::vec3 moonPositionNow{0.0f};          // MoonModel::positionEci cast to float; held while paused
 
   // Predicted orbit path (render-scale points, see computePredictedOrbitPath)
   // -- computed once up front and refreshed periodically, not every frame.
-  std::vector<glm::vec3> orbitPathPoints = computePredictedOrbitPath(orbitState, Config::ORBIT_PATH_POINTS);
+  std::vector<glm::vec3> orbitPathPoints = computePredictedOrbitPath(orbitState, Config::ORBIT_PATH_POINTS, missionEpochJd);
   float orbitPathRefreshTimer = 0.0f;
   double currentJdNow = missionEpochJd; // held while paused, and for drawEarth() below
 
@@ -1767,11 +1820,15 @@ int main()
       // frame -- cheap (six ints/one float into a JD formula), and means
       // an edit takes effect immediately without a separate "apply" step.
       missionEpochJd = OrbitTime::julianDate(epoch.year, epoch.month, epoch.day, epoch.hour, epoch.minute, epoch.second);
+      sunGravity->epochJd = missionEpochJd;
+      moonGravity->epochJd = missionEpochJd;
+      srp->epochJd = missionEpochJd;
       currentJdNow = OrbitTime::advance(missionEpochJd, orbitState.missionTimeS);
       earthRelativePositionNow = glm::vec3(orbitState.position); // single non-accumulating cast -- see OrbitState.h
       sat.body->position = earthRelativePositionNow;
       glm::dvec3 sunDirEci = SunModel::directionEci(currentJdNow);
       inEclipse = EclipseModel::inEclipse(orbitState.position, sunDirEci);
+      moonPositionNow = glm::vec3(MoonModel::positionEci(currentJdNow)); // single non-accumulating cast, same as earthRelativePositionNow
 
       // Refresh the predicted-path polyline periodically (not every
       // frame -- see ORBIT_PATH_REFRESH_S) since it only drifts slowly
@@ -1779,7 +1836,7 @@ int main()
       orbitPathRefreshTimer += dt;
       if (orbitPathRefreshTimer > Config::ORBIT_PATH_REFRESH_S)
       {
-        orbitPathPoints = computePredictedOrbitPath(orbitState, Config::ORBIT_PATH_POINTS);
+        orbitPathPoints = computePredictedOrbitPath(orbitState, Config::ORBIT_PATH_POINTS, missionEpochJd);
         orbitPathRefreshTimer = 0.0f;
       }
 
@@ -1932,16 +1989,25 @@ int main()
     drawStarTracker(gui, sat.starTracker, sat.body, adcs);
     drawMagneticField(gui, fieldNow, sat.body->position);
     drawMirror(gui, sat.body);
-    drawSunReflection(gui, sat.body, adcs.sunPosition);
+    if (adcs.mode == PointingMode::REFLECT)
+      drawSunReflection(gui, sat.body, adcs.sunPosition);
 
     gui.drawSphere(adcs.target, Config::TARGET_MARKER_RADIUS_M, {0, 1.0f, 0});
 
     // Sun marker sized to its *real* angular diameter (~32 arcmin) at its
-    // current (arbitrary, scaled-for-visibility) distance from the
-    // satellite, rather than a fixed prop radius -- r = d*tan(halfAngle).
+    // real current distance from the satellite (~1 AU), rather than a
+    // fixed prop radius -- r = d*tan(halfAngle).
     float sunDistance = glm::length(adcs.sunPosition - sat.body->position);
     float sunRadius = sunDistance * std::tan(glm::radians(Config::SUN_ANGULAR_DIAMETER_DEG * 0.5f));
     gui.drawSphere(adcs.sunPosition, sunRadius, {1.0f, 0.9f, 0.1f});
+
+    // Moon sphere at its real ECI position/size (MoonModel/OrbitFrames::
+    // MOON_RADIUS_M) -- unlike the Sun, close enough (~3.84e8m vs. the
+    // Sun's ~1.5e11m) that its real radius alone (not an angular-diameter
+    // trick) renders it as a visible disk at the same real distance. No
+    // texture asset for the Moon (unlike Earth) -- a plain lit gray sphere
+    // is enough to show its real position/motion.
+    gui.drawSphere(moonPositionNow, static_cast<float>(OrbitFrames::MOON_RADIUS_M), {0.75f, 0.75f, 0.78f});
 
     // Pointing-error visualization: a line from the body straight to each
     // reference makes the *angular gap* between where the body actually
@@ -1949,7 +2015,6 @@ int main()
     // judge by eye than comparing the wireframe's own +Z arrow (drawn in
     // drawSatelliteWireframe) against a distant marker.
     gui.drawLine(sat.body->position, adcs.target, {0, 1.0f, 0});
-    gui.drawLine(sat.body->position, adcs.sunPosition, {1.0f, 0.9f, 0.1f});
 
     drawWorldAxesGizmo(gui);
 

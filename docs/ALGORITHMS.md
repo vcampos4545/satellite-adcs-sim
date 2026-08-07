@@ -93,6 +93,41 @@ ECI state, summing a set of pluggable force models each stage
   misses — Earth's oblateness causes real nodal regression (the orbital
   plane precessing over time) and apsidal drift. Standard closed-form
   acceleration (Vallado eq. 9-38); no higher-order zonal harmonics.
+- **Atmospheric drag** (`rigidbody/orbit/AtmosphericDrag.h`):
+  `a = -0.5 * rho(alt) * Cd * (A/m) * |v_rel| * v_rel`, where `v_rel` is
+  velocity relative to the atmosphere (which co-rotates with the planet:
+  `v_atm = omega x r`, not inertial/ECI velocity directly). `rho(alt)` is
+  a 23-layer piecewise-exponential fit to the US Standard Atmosphere 1976
+  (0–1000 km, each layer's own reference density/scale height), zero
+  above 1000 km — a distinct, higher-fidelity model from `UniformDrag`/
+  `CentralBodyDrag`'s single fixed scale height, since this is the
+  mission-duration truth propagator's own drag term, not a short-duration
+  local approximation.
+- **Solar radiation pressure** (`rigidbody/orbit/SolarRadiationPressure.h`):
+  `a = -P(r_sun) * Cr * (A/m) * r_hat_(sun->sat)`, where
+  `P(r_sun) = P_1AU * (AU/r_sun)^2` (inverse-square, same as solar flux)
+  and `Cr` is the reflectivity coefficient (1.0 = perfect absorber,
+  ~2.0 = perfect reflector; defaults to 1.3, typical for a mixed real
+  surface). Zeroed during eclipse via the same `EclipseModel` used for EPS
+  generation gating.
+- **Third-body gravity, Sun and Moon** (`rigidbody/orbit/ThirdBodyGravity.h`):
+  `a = mu_body * (d/|d|^3 - r_body/|r_body|^3)`, where `d = r_body -
+  r_satellite`. The second (`-r_body/|r_body|^3`) term is the "indirect"
+  correction that removes Earth's own acceleration toward the third body,
+  which is what keeps the result correct in the (non-inertial-relative-to-
+  the-third-body, but inertial-relative-to-Earth) ECI frame this project
+  uses — without it the formula would double-count Earth's own fall
+  toward the Sun/Moon as a perturbation on the satellite. Moon position
+  comes from `rigidbody/orbit/MoonModel.h` (Meeus, *Astronomical
+  Algorithms* ch. 47, reduced to its dominant periodic terms — ~0.3°
+  accurate, the same precision tier as `SunModel`).
+
+All four of these perturbations are added to both the real
+`orbitPropagator` and `computePredictedOrbitPath()`'s temporary one (see
+harness) — the predicted-path polyline uses the same force models the
+real propagator does, not a simplified stand-in, since a two-body+J2-only
+prediction would visibly diverge from the real perturbed trajectory over
+a full orbit.
 
 This project's default orbit is ISS-like (500 km circular, 51.6°
 inclination), specified via classical orbital elements
@@ -117,6 +152,38 @@ within Earth's radius of the Earth-Sun line. Slightly overestimates
 eclipse duration versus the true conical umbra/penumbra; adequate for
 gating EPS generation (see "EPS" below), not for anything needing a
 precise penumbra transition.
+
+**Sun/Moon rendering** (harness, `satellite_adcs_sim.cpp`'s draw block):
+both are drawn at their real ECI positions, not scaled-for-visibility
+stand-ins — the Sun via `adcs.sunPosition` (already the real
+`SunModel::positionEci`), the Moon via a per-frame
+`MoonModel::positionEci` cast (`moonPositionNow`, held while paused, same
+pattern as `earthRelativePositionNow`). The Sun's marker radius is
+derived each frame from its real angular diameter (~32 arcmin) at its
+real current distance (`r = d * tan(halfAngle)`), since drawing it at its
+true ~1 AU distance makes an angular-diameter-based size the only way it
+reads as "the Sun" rather than a fixed-size prop; the Moon, close enough
+(~3.84e8 m vs. the Sun's ~1.5e11 m) that its true radius
+(`OrbitFrames::MOON_RADIUS_M`) alone renders as a visible disk, is drawn
+at that real size directly with no texture asset (a plain lit sphere).
+`Config::CAMERA_FAR` (2.0e11 m) is sized to clear the real Sun distance
+with margin — both markers would otherwise be silently clipped by the far
+plane despite their positions being computed correctly.
+
+**Reaction-wheel/magnetorquer mount-position precision**
+(`drawReactionWheels`/`drawMagnetorquers`, harness): these read the
+public `mountPositionBody`/`spinAxisBody`/`axisBody` fields directly and
+apply `SATELLITE_VISUAL_SCALE` to the (small, ~0.03 m) mount offset
+*before* rotating and adding it to the satellite's real (~6.9e6 m)
+position — not
+`wheel->getWorldMountPosition(*sat)` (which computes `body.position +
+body.orientation * mountOffset` internally, in float32, before the
+harness ever sees the result). Scaling after that internal addition
+can't recover precision already lost to the same catastrophic-
+cancellation pattern described above for `adcs.sunPosition`/
+`randomTarget()` — the general fix is always to scale the small offset
+up to a normal-sized number *first*, then add it to the large base value,
+never the reverse.
 
 **Orbital elements / geodetic conversion, for the Orbit tab**
 (`rigidbody/orbit/OrbitalElements.h`'s `fromState()`, `OrbitFrames.h`'s
