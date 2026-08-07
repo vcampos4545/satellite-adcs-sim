@@ -216,7 +216,7 @@ namespace Config
   // `satPos + (trueOffset) * SATELLITE_VISUAL_SCALE` for anything offset
   // from center, and `trueSize * SATELLITE_VISUAL_SCALE` for anything
   // sized -- see drawSatelliteWireframe/drawReactionWheels/etc.
-  constexpr float SATELLITE_VISUAL_SCALE = 1000000.0f;
+  constexpr float SATELLITE_VISUAL_SCALE = 100000.0f;
 
   // Camera: follows the satellite's real ECI position (see main()'s
   // orbit.setTarget() call each frame), so distances are tuned for a
@@ -318,6 +318,17 @@ namespace Config
   // loop that could otherwise keep them in sync with a changing body.
   constexpr double SPACECRAFT_MASS_KG = 1.33;
   constexpr double SPACECRAFT_CROSS_SECTION_M2 = 0.1 * 0.1; // one 10x10cm face
+
+  // Global dipole field-line visualization (see traceDipoleFieldLines):
+  // seed colatitudes/azimuths (both hemispheres) for the traced loops, an
+  // RK4 arclength step size, and a per-line point cap as a safety bound
+  // against near-axis seeds (whose loops can be very large) never
+  // reaching the closure/max-radius stopping condition.
+  constexpr float FIELD_LINE_COLATITUDES_DEG[] = {15.0f, 30.0f, 45.0f};
+  constexpr int FIELD_LINE_AZIMUTH_COUNT = 10;
+  constexpr float FIELD_LINE_STEP_FRAC_EARTH_RADIUS = 0.03f; // RK4 step, as a fraction of Earth's radius
+  constexpr int FIELD_LINE_MAX_POINTS = 200;
+  constexpr float FIELD_LINE_MAX_RADIUS_FRAC_EARTH_RADIUS = 12.0f; // safety cutoff for open-looking loops
 
   // A flat mirror mounted on the +Z face (same axis every pointing mode
   // aims), just for visualizing the sun-reflection geometry -- not wired
@@ -502,7 +513,7 @@ void drawReactionWheels(GUI &gui, const std::vector<ReactionWheel *> &reactionWh
 static void drawMagnetorquers(GUI &gui, const std::vector<Magnetorquer *> &magnetorquers, RigidBody *sat)
 {
   const float rodRadius = 0.006f * Config::SATELLITE_VISUAL_SCALE;
-  const float rodLength = 0.07f * Config::SATELLITE_VISUAL_SCALE;
+  const float rodLength = 0.035f * Config::SATELLITE_VISUAL_SCALE;
   const float arrowLength = 0.06f * Config::SATELLITE_VISUAL_SCALE;
 
   for (auto &rod : magnetorquers)
@@ -525,26 +536,6 @@ static void drawMagnetorquers(GUI &gui, const std::vector<Magnetorquer *> &magne
     gui.drawCylinder(worldPos, rodRadius, rodLength, worldAxis, glm::quat(1, 0, 0, 0), color);
     gui.drawArrow(worldPos, worldPos + worldAxis * arrowLength * satRatio, color);
   }
-}
-
-// Star tracker boresight: a thin line out from the body along its current
-// pointing direction, colored by the same valid/blinded/no-correction
-// status the Sensors tab shows -- lets you visually connect "the tracker
-// just went red" with the boresight swinging toward the sun marker.
-static void drawStarTracker(GUI &gui, const StarTracker &tracker, RigidBody *sat, ADCS &adcs)
-{
-  const float length = 0.5f * Config::SATELLITE_VISUAL_SCALE;
-  glm::vec3 worldAxis = sat->orientation * tracker.boresightBody;
-
-  glm::vec3 color;
-  if (adcs.starTrackerValid)
-    color = {0.3f, 1.0f, 0.4f};
-  else if (adcs.triadFallbackUsed)
-    color = {1.0f, 0.8f, 0.2f};
-  else
-    color = {1.0f, 0.4f, 0.2f};
-
-  gui.drawArrow(sat->position, sat->position + worldAxis * length, color);
 }
 
 // A flat mirror bolted to the +Z face, purely for visualizing sun-
@@ -594,36 +585,123 @@ static void drawSunReflection(GUI &gui, RigidBody *sat, const glm::vec3 &sunPosi
   gui.drawLine(mirrorPos, mirrorPos + reflectedDir * Config::REFLECTED_RAY_LENGTH * Config::SATELLITE_VISUAL_SCALE, {1.0f, 0.5f, 0.9f});
 }
 
-// Visualizes the ambient field the satellite is sitting in: a small grid of
-// arrows around the body, all pointing the same direction/magnitude, since
-// the field varies negligibly over a cubesat-sized volume (its gradient
-// scale is Earth-sized, not cubesat-sized) -- what varies is the field
-// *over time* as the real orbit (see OrbitPropagator/CentralBodyMagneticField
-// in main()) sweeps through it. A distinct, brighter arrow at the body
-// itself marks the same vector so it reads clearly against the grid.
+// Visualizes the ambient field the satellite is actually sampling, as a
+// single arrow at the body -- what matters for reading FSW behavior
+// against the field (e.g. B-dot detumble, magnetorquer dipole direction)
+// is this local vector, not the global field geometry (see
+// traceDipoleFieldLines/drawMagneticFieldLines below for that).
 static void drawMagneticField(GUI &gui, const glm::vec3 &fieldWorldT, glm::vec3 satPos)
 {
   // Scales a ~20-60 uT LEO field into a visible arrow length, then applies
   // SATELLITE_VISUAL_SCALE like every other satellite-local dimension so
-  // the field arrows stay proportionate to the now-much-bigger satellite
+  // the field arrow stays proportionate to the now-much-bigger satellite
   // instead of shrinking to nothing next to it.
   constexpr float FIELD_VISUAL_SCALE = 8000.0f;
   const glm::vec3 fieldColor{0.2f, 0.9f, 0.9f};
 
   glm::vec3 arrow = fieldWorldT * FIELD_VISUAL_SCALE * Config::SATELLITE_VISUAL_SCALE;
-
   gui.drawArrow(satPos, satPos + arrow, fieldColor, 2.0f);
+}
 
-  const int gridN = 2; // -gridN..+gridN in each of x,y -> 5x5 grid
-  const float spacing = 0.6f * Config::SATELLITE_VISUAL_SCALE;
-  const float gridHeight = -0.7f * Config::SATELLITE_VISUAL_SCALE; // below the satellite, out of the way of the sat/wheels/rods
-  for (int ix = -gridN; ix <= gridN; ++ix)
+// One traced dipole field line, plus which magnetic hemisphere it was
+// seeded from (for two-tone coloring -- see drawMagneticFieldLines).
+struct FieldLine
+{
+  std::vector<glm::vec3> points;
+  bool seededNorth;
+};
+
+// Traces closed dipole field-line loops for the global magnetic-field
+// visualization (distinct from drawMagneticField's local sample arrow
+// above): seeds a colatitude/azimuth grid near each magnetic pole on
+// Earth's real surface and integrates outward along the *unit* field
+// direction (RK4 in arclength, not time -- this is a streamline, not a
+// trajectory) until the line either returns near the surface (loop
+// closed) or exceeds a safety radius (near-axis seeds produce very large
+// loops that can be slow to close).
+//
+// Seed colatitude is measured from CentralBodyMagneticField's own
+// `rotationAxisWorld` (world +Z by default), not the true ~11-degree-
+// tilted dipole axis -- close enough for seed *placement* (the traced
+// geometry itself is exact, since it integrates the real sampled field
+// at every step) that the loops still visibly fan out from both poles,
+// without needing a public accessor for the engine's private dipole-axis
+// helper just for this cosmetic seeding choice.
+//
+// The field is a fixed-inertial tilted dipole (no time dependence in
+// this model -- see CentralBodyMagneticField's own header comment), so
+// this only needs to run once at startup, not every frame.
+static std::vector<FieldLine> traceDipoleFieldLines(const CentralBodyMagneticField &magField)
+{
+  const float earthR = static_cast<float>(OrbitFrames::EARTH_RADIUS_M);
+  const float stepM = earthR * Config::FIELD_LINE_STEP_FRAC_EARTH_RADIUS;
+  const float maxRadius = earthR * Config::FIELD_LINE_MAX_RADIUS_FRAC_EARTH_RADIUS;
+  const glm::vec3 axis = glm::normalize(magField.rotationAxisWorld);
+  glm::vec3 axisX = (std::abs(axis.x) < 0.9f) ? glm::vec3(1, 0, 0) : glm::vec3(0, 1, 0);
+  glm::vec3 basisX = glm::normalize(glm::cross(axisX, axis));
+  glm::vec3 basisY = glm::cross(axis, basisX);
+
+  std::vector<FieldLine> lines;
+  for (bool north : {true, false})
   {
-    for (int iy = -gridN; iy <= gridN; ++iy)
+    glm::vec3 pole = north ? axis : -axis;
+    for (float colatDeg : Config::FIELD_LINE_COLATITUDES_DEG)
     {
-      glm::vec3 base = satPos + glm::vec3(ix * spacing, iy * spacing, gridHeight);
-      gui.drawArrow(base, base + arrow, fieldColor * 0.6f);
+      float colat = glm::radians(colatDeg);
+      for (int ai = 0; ai < Config::FIELD_LINE_AZIMUTH_COUNT; ai++)
+      {
+        float az = (2.0f * glm::pi<float>() * ai) / Config::FIELD_LINE_AZIMUTH_COUNT;
+        glm::vec3 seedDir = std::cos(colat) * pole + std::sin(colat) * (std::cos(az) * basisX + std::sin(az) * basisY);
+        glm::vec3 pos = seedDir * (earthR * 1.001f); // just above the surface, avoiding the r<1m undefined-direction case
+
+        glm::vec3 b0 = magField.sample(pos);
+        if (glm::length(b0) < 1e-30f)
+          continue;
+        // Integrate away from the surface first -- the dipole loop's own
+        // curvature brings it back down near the other pole.
+        float sign = (glm::dot(b0, glm::normalize(pos)) > 0.0f) ? 1.0f : -1.0f;
+
+        FieldLine line;
+        line.seededNorth = north;
+        line.points.reserve(Config::FIELD_LINE_MAX_POINTS);
+        line.points.push_back(pos);
+
+        auto direction = [&](const glm::vec3 &p) { return sign * glm::normalize(magField.sample(p)); };
+        for (int i = 0; i < Config::FIELD_LINE_MAX_POINTS; i++)
+        {
+          glm::vec3 k1 = direction(pos);
+          glm::vec3 k2 = direction(pos + 0.5f * stepM * k1);
+          glm::vec3 k3 = direction(pos + 0.5f * stepM * k2);
+          glm::vec3 k4 = direction(pos + stepM * k3);
+          pos += (stepM / 6.0f) * (k1 + 2.0f * k2 + 2.0f * k3 + k4);
+          line.points.push_back(pos);
+
+          float r = glm::length(pos);
+          if (r < earthR * 1.001f && i > 2)
+            break; // closed the loop back onto the surface
+          if (r > maxRadius)
+            break; // safety cutoff -- shouldn't trigger for these colatitudes, but near-axis seeds could
+        }
+        lines.push_back(std::move(line));
+      }
     }
+  }
+  return lines;
+}
+
+// Draws the traced dipole loops in two tones by seed hemisphere (cyan for
+// north, amber for south) -- readable at a glance which pole a given loop
+// connects to, similar to how textbook/magnetosphere diagrams color
+// field lines by polarity.
+static void drawMagneticFieldLines(GUI &gui, const std::vector<FieldLine> &lines)
+{
+  const glm::vec3 northColor{0.25f, 0.65f, 0.95f};
+  const glm::vec3 southColor{0.95f, 0.65f, 0.15f};
+  for (const FieldLine &line : lines)
+  {
+    const glm::vec3 &color = line.seededNorth ? northColor : southColor;
+    for (size_t i = 0; i + 1 < line.points.size(); i++)
+      gui.drawLine(line.points[i], line.points[i + 1], color, 1.0f);
   }
 }
 
@@ -1718,6 +1796,11 @@ int main()
   // `gravity` feeds the IMU sample below.
   CentralBodyMagneticField magField;
 
+  // Global field-line geometry for drawMagneticFieldLines -- traced once
+  // since this model's dipole is fixed-inertial (see traceDipoleFieldLines'
+  // own comment), not per frame.
+  std::vector<FieldLine> magneticFieldLines = traceDipoleFieldLines(magField);
+
   SensorTelemetry telemetry(Config::TELEMETRY_HISTORY_SAMPLES);
 
   SimControls sim(Config::TUMBLE_KICK_RAD_S);
@@ -1969,6 +2052,16 @@ int main()
     }
 
     // =================== DRAW ===================
+    // VGL's scene lighting is a single directional light (see GUI.h's
+    // m_lightDir / EmbeddedShaders.h's diffuse term), defaulting to an
+    // arbitrary fixed world-space direction -- it has no idea where the
+    // real Sun is unless told every frame. `lightDir` is the direction
+    // *toward* the light (the shader does `dot(normal, normalize(lightDir))`),
+    // so this must be the direction from Earth's center toward the Sun,
+    // not the Sun's position itself -- without this call Earth's lit
+    // hemisphere is disconnected from where the Sun marker is actually
+    // drawn, which is what made the sunlit side look inverted.
+    gui.setLightDirection(glm::normalize(adcs.sunPosition));
     gui.beginFrame();
     imguiLayer.beginFrame();
 
@@ -1986,8 +2079,8 @@ int main()
     drawSatelliteWireframe(gui, sat.body);
     drawReactionWheels(gui, sat.wheels, sat.body);
     drawMagnetorquers(gui, sat.magnetorquers, sat.body);
-    drawStarTracker(gui, sat.starTracker, sat.body, adcs);
     drawMagneticField(gui, fieldNow, sat.body->position);
+    drawMagneticFieldLines(gui, magneticFieldLines);
     drawMirror(gui, sat.body);
     if (adcs.mode == PointingMode::REFLECT)
       drawSunReflection(gui, sat.body, adcs.sunPosition);

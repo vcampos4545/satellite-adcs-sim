@@ -170,6 +170,39 @@ at that real size directly with no texture asset (a plain lit sphere).
 with margin — both markers would otherwise be silently clipped by the far
 plane despite their positions being computed correctly.
 
+**Scene lighting direction** (harness, main render loop, right before
+`gui.beginFrame()`): VGL's single directional light (`GUI::setLightDirection`)
+defaults to a fixed, arbitrary world-space direction with no notion of
+where the Sun actually is — the harness sets it to
+`normalize(adcs.sunPosition)` every frame (the real direction from Earth's
+center toward the Sun) so Earth's lit hemisphere actually corresponds to
+where the Sun marker is drawn. The shader's diffuse term is
+`dot(normal, normalize(lightDir))`, i.e. `lightDir` must point *toward*
+the light source, not describe the Sun's position itself — using the raw
+`adcs.sunPosition` vector unnormalized (or negated) here would light the
+wrong hemisphere.
+
+**Global magnetic field-line visualization** (`traceDipoleFieldLines`/
+`drawMagneticFieldLines`, harness — distinct from `drawMagneticField`'s
+single arrow at the satellite showing the locally-sampled vector that
+actually drives magnetorquer/magnetometer FSW): traces closed dipole
+field-line loops connecting Earth's magnetic poles, in the same style as
+a textbook/magnetosphere field-line diagram. Seeded on a colatitude/
+azimuth grid near both poles (measured from `CentralBodyMagneticField`'s
+`rotationAxisWorld`, an approximation of the true ~11°-tilted dipole axis
+that's exact enough for seed *placement* — the traced geometry itself is
+exact, since every step samples the real field), each line is integrated
+as an RK4 arclength streamline (`dP/ds = sign * B(P)/|B(P)|`, not a
+time-stepped trajectory) until it either closes back onto the surface or
+crosses a safety-radius cutoff (guards near-axis seeds, whose loops are
+much larger). `sign` is chosen per-seed so the first step moves radially
+outward, matching how a real dipole loop leaves the surface at one pole
+and curves back down to the other. Traced once at startup, not per frame,
+since this model's dipole is fixed-inertial (no time dependence — see
+`CentralBodyMagneticField`'s own header comment); drawn every frame in
+two tones by seed hemisphere (cyan/amber) so which pole a given loop
+connects to reads at a glance.
+
 **Reaction-wheel/magnetorquer mount-position precision**
 (`drawReactionWheels`/`drawMagnetorquers`, harness): these read the
 public `mountPositionBody`/`spinAxisBody`/`axisBody` fields directly and
