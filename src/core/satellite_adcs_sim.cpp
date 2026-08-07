@@ -14,11 +14,12 @@
 #include <rigidbody/orbit/AtmosphericDrag.h>
 #include <rigidbody/orbit/SolarRadiationPressure.h>
 #include <rigidbody/power/SolarPanel.h>
-#include "fsw/ADCS.h"
+#include "fsw/FlightSoftware.h"
 #include "fsw/FlightTypes.h"
 #include "ImGuiLayer.h"
 #include "Config.h"
 #include "Cubesat.h"
+#include "SimFlightSoftwareHAL.h"
 #include "SensorTelemetry.h"
 #include "GroundStations.h"
 #include "rendering/SatelliteRenderer.h"
@@ -40,7 +41,7 @@
 // ---------------------------------------------------------------------------
 int main()
 {
-  GUI gui(800, 600, "CubeSat ADCS (Pyramid RWA)");
+  GUI gui(800, 600, "Satellite Simulator");
   ImGuiLayer imguiLayer(gui);
   gui.camera
       .setUp({0, 0, 1})
@@ -52,12 +53,21 @@ int main()
   // trades a small amount of precision at extreme distances for correct
   // ordering across the whole range.
   gui.setLogDepth(Config::CAMERA_FAR);
+  // Raised from VGL's default 0.15 -- Earth's night side otherwise reads
+  // as near-black, harsher than the visual reference this project is
+  // going for (not a claim about real earthshine/city-light brightness,
+  // just a softer unlit floor). See Config::SCENE_AMBIENT_LIGHT.
+  gui.setAmbientLight(Config::SCENE_AMBIENT_LIGHT);
 
   // Loaded after the GL context is live (Texture::loadFromFile requires
   // it) -- falls back to a grey 1x1 texture with a printed warning if the
   // file isn't found, so a missing asset doesn't crash the sim.
   Texture earthTexture;
   earthTexture.loadFromFile(std::string(RESOURCES_DIR) + "/textures/earth.jpg");
+  Texture sunTexture;
+  sunTexture.loadFromFile(std::string(RESOURCES_DIR) + "/textures/sun.jpg");
+  Texture moonTexture;
+  moonTexture.loadFromFile(std::string(RESOURCES_DIR) + "/textures/moon.jpg");
 
   PhysicsWorld world;
   HardwareConfig hwConfig;
@@ -77,18 +87,33 @@ int main()
 
   glm::vec2 lastMousePos = gui.getMousePosition();
 
-  // Flight software: ADCS is hardware-abstracted (see FlightTypes.h) --
-  // configure() gives it a fixed hardware description and an initial
-  // attitude estimate; every cycle after this, step() only ever sees
-  // plain FSWInputs the harness (this loop) builds from the simulated
-  // sensors, and returns plain FSWOutputs the harness applies to the
-  // simulated actuators. ADCS itself never holds a RigidBody*/sensor
-  // pointer/actuator pointer at all.
-  ADCS adcs;
-  adcs.configure(hwConfig, sat.body->orientation);
+  // Flight software: FlightSoftware is this project's actual firmware
+  // main-loop body (see src/fsw/FlightSoftware.h) -- owns ADCS (attitude
+  // estimation/guidance/control/allocation) and FDIR (fault detection/
+  // mode override) as peers, and is hardware-abstracted the same way ADCS
+  // itself is (see FlightTypes.h): configure() gives it a fixed hardware
+  // description, a multi-rate task schedule, and an initial attitude
+  // estimate; every tick after this, step() pulls sensor data and pushes
+  // actuator commands through fswHal (see SimFlightSoftwareHAL.h) on its
+  // own internal per-task schedule, never seeing a RigidBody*/sensor
+  // pointer/actuator pointer at all. `adcs` stays a local reference into
+  // it so the rest of this file's existing adcs.foo calls (mode, target,
+  // telemetry fields, ...) don't need to change.
+  SimFlightSoftwareHAL fswHal(sat);
+  FlightSoftware flightSoftware;
+  ADCS &adcs = flightSoftware.adcs;
+  FswSchedule fswSchedule;
+  fswSchedule.imuPeriodS = Config::IMU_PERIOD_S;
+  fswSchedule.magPeriodS = Config::MAG_PERIOD_S;
+  fswSchedule.starTrackerPeriodS = Config::STAR_TRACKER_PERIOD_S;
+  fswSchedule.sunSensorPeriodS = Config::SUN_SENSOR_PERIOD_S;
+  fswSchedule.powerPeriodS = Config::POWER_PERIOD_S;
+  fswSchedule.navPeriodS = Config::NAV_PERIOD_S;
+  fswSchedule.adcsPeriodS = Config::TIME_STEP_S;
+  flightSoftware.configure(hwConfig, fswSchedule, sat.body->orientation, fswHal);
   // adcs.target is set below, once orbitState/missionEpochJd exist -- see
   // the ground-station selection block after they're established.
-  float adcsTimer = 0.0f;
+  float fswTickTimer = 0.0f;
   float missionTime = 0.0f;
   float trueErrDeg = 0.0f; // harness-side diagnostic: true (ground-truth) pointing error, held between ADCS cycles like fieldNow below
 
@@ -218,55 +243,15 @@ int main()
     glm::vec2 mouseDelta = mousePos - lastMousePos;
     lastMousePos = mousePos;
 
-    if (gui.isKeyJustPressed(GLFW_KEY_1))
-      adcs.mode = PointingMode::NADIR;
-    if (gui.isKeyJustPressed(GLFW_KEY_2))
-      adcs.mode = PointingMode::SUN_POINTING;
-    if (gui.isKeyJustPressed(GLFW_KEY_3))
-      adcs.mode = PointingMode::DETUMBLE;
-    if (gui.isKeyJustPressed(GLFW_KEY_4))
-      adcs.mode = PointingMode::TARGET;
-    if (gui.isKeyJustPressed(GLFW_KEY_5))
-      adcs.mode = PointingMode::SLEW;
-    if (gui.isKeyJustPressed(GLFW_KEY_6))
-      adcs.mode = PointingMode::FINE_POINTING;
-    if (gui.isKeyJustPressed(GLFW_KEY_7))
-      adcs.mode = PointingMode::REFLECT;
-
-    if (gui.isKeyJustPressed(GLFW_KEY_T))
-    {
-      static std::mt19937 tumbleRng(std::random_device{}());
-      std::uniform_real_distribution<float> tumbleDist(-sim.tumbleKickRadS, sim.tumbleKickRadS);
-      sat.body->angularVelocity = glm::vec3(tumbleDist(tumbleRng), tumbleDist(tumbleRng), tumbleDist(tumbleRng));
-    }
-
-    // Follow the satellite: recenter the orbit camera's target on its
-    // real current position every frame (like constellation-sim does for
-    // a selected satellite), so free yaw/pitch/zoom around it still work
-    // (setTarget doesn't touch distance/yaw/pitch) while any right-drag
-    // pan gets overridden next frame -- a locked-on chase camera can't
-    // also be panned away from what it's locked onto.
+    // Follow the satellite
     orbit.setTarget(sat.body->position);
 
-    // Don't drive the orbit camera from mouse input ImGui itself wants
-    // (e.g. dragging the Controller window around) -- otherwise moving a
-    // panel also spins the camera underneath it.
+    // Check ImGUi
     if (!ImGui::GetIO().WantCaptureMouse)
       orbit.handleInput(gui, mouseDelta, gui.getScrollDelta());
     orbit.applyToCamera(gui.camera);
 
     // =================== SIMULATION ===================
-    // Everything below (mission clock, field sampling, FSW, fault
-    // injection, physics) freezes while paused; camera/UI/mode selection
-    // above stay live so the panel is still usable mid-pause.
-    //
-    // Time controls (see SimulationPanel.h's SimControls comment): while
-    // running, `simDt` is real dt scaled by sim.timeScale, so this whole
-    // block (and everything inside it) advances *simulated* time at that
-    // rate rather than 1:1 with wall clock. While paused, a single
-    // Config::TIME_STEP_S step runs instead if the Simulation tab's Step
-    // button set stepRequested -- a one-shot request, cleared immediately
-    // so holding the pause checkbox doesn't repeatedly re-trigger it.
     bool advanceSim = !sim.paused;
     float simDt = dt * sim.timeScale;
     if (sim.paused && sim.stepRequested)
@@ -332,19 +317,6 @@ int main()
         groundTrackSampleTimer = 0.0f;
       }
 
-      // Sun position for guidance/EPS: the real ECI position (~1.5e11 m),
-      // not an arbitrary nearby offset -- now that sat.body->position is
-      // real too (~6.9e6 m), placing the sun a small fixed distance away
-      // (the old "2 units from the satellite" convention) would suffer
-      // the same catastrophic-cancellation problem a target at Earth-
-      // radius scale avoids (see GroundStations.h/selectClosestGroundStation
-      // above): adding a small offset to spacecraftPositionWorld and then
-      // subtracting it back out to recover a direction loses almost all
-      // of that offset's precision once the base position's magnitude
-      // dwarfs it. The real Sun position doesn't have this
-      // problem -- it's the *dominant* term in sunPosition -
-      // spacecraftPositionWorld, not a small perturbation of it, so the
-      // subtraction stays well-conditioned.
       adcs.sunPosition = glm::vec3(SunModel::positionEci(currentJdNow));
 
       // Ground-station target selection: recomputed every advanceSim
@@ -354,19 +326,25 @@ int main()
       // must be within the satellite's footprint (elevation >=
       // Config::GROUND_STATION_MIN_ELEVATION_DEG) to be a viable target
       // at all -- selectClosestGroundStation returns nullptr rather than
-      // falling back to an out-of-view station, in which case adcs.target
-      // falls back to the real Sun position (computed just above) instead
-      // -- there's always *something* physically sensible to point at,
-      // even with no station currently reachable. Only an actual change
-      // of *what's* selected (a different station, or the Sun fallback
-      // engaging/disengaging) clears controller integral windup -- the
-      // position update itself is continuous, not a discrete retarget the
-      // controller needs to react to as one.
+      // falling back to an out-of-view station, in which case
+      // adcs.targetValid goes false and ADCS's own guidance falls back
+      // to sun-relative pointing for TARGET/SLEW/FINE_POINTING/REFLECT
+      // (see ADCS.h's targetValid comment) -- the typical real-ADCS
+      // convention for "this mode's reference isn't available right
+      // now," rather than this harness spoofing `target` itself to point
+      // somewhere else. adcs.target is simply left stale (harmless --
+      // unread while !targetValid) when no station is selected. Only an
+      // actual change of *what's* selected (a different station, or the
+      // Sun fallback engaging/disengaging) clears controller integral
+      // windup -- the position update itself is continuous, not a
+      // discrete retarget the controller needs to react to as one.
       glm::dvec3 targetEci;
       const GroundStation *chosenGroundStation = selectClosestGroundStation(
           orbitState.position, OrbitFrames::gmstRad(currentJdNow),
           glm::radians(static_cast<double>(Config::GROUND_STATION_MIN_ELEVATION_DEG)), targetEci);
-      adcs.target = chosenGroundStation ? glm::vec3(targetEci) : adcs.sunPosition;
+      adcs.targetValid = (chosenGroundStation != nullptr);
+      if (chosenGroundStation)
+        adcs.target = glm::vec3(targetEci);
       if (chosenGroundStation != selectedGroundStation)
       {
         selectedGroundStation = chosenGroundStation;
@@ -383,78 +361,57 @@ int main()
         rod->ambientFieldWorld = fieldNow;
       adcs.ambientFieldWorld = fieldNow;
 
-      // =================== FLIGHT SOFTWARE (20 Hz) ===================
-      // This is the HAL boundary in action: sample every simulated sensor,
-      // pack the readings into a plain FSWInputs, hand it to ADCS::step()
-      // (which never sees a RigidBody/sensor/actuator object at all), then
-      // apply the plain FSWOutputs it returns to the simulated actuators.
-      // A HIL adapter would replace exactly the sampling and command-
-      // application on either side of that call -- ADCS::step() itself
-      // wouldn't change.
+      // Environment context the HAL's sensor reads need but that isn't
+      // itself a sensor reading -- pushed once per outer frame, the same
+      // role adcs.ambientFieldWorld/adcs.sunPosition already play as
+      // harness-pushed state on ADCS itself. sat.body->position is only
+      // bridged from orbitState once per frame (see main()'s own comment
+      // on that), so sunDirWorld is the same value across every fast tick
+      // within this frame -- computing it once here, not per tick, is not
+      // a fidelity loss.
+      glm::vec3 sunDirWorld = adcs.sunPosition - sat.body->position;
+      fswHal.setEnvironment(gravity, fieldNow, sunDirWorld, inEclipse);
+
+      // =================== FLIGHT SOFTWARE (fast tick) ===================
+      // FlightSoftware::step() is this project's actual firmware main-loop
+      // body: called every tick at Config::FIRMWARE_TICK_S, it pulls sensor
+      // data and pushes actuator commands through fswHal on each task's own
+      // configured rate (see FswSchedule) -- this loop's only job is
+      // driving the tick and reacting to whether an ADCS cycle happened
+      // (step() returns true iff it did), not sampling/applying anything
+      // itself anymore. A HIL adapter would replace fswHal with a class
+      // implementing FlightSoftwareHAL against real hardware -- this loop
+      // and FlightSoftware itself wouldn't change.
       //
       // A `while`, not an `if`: at timeScale > 1x, simDt can span more
-      // than one nominal Config::TIME_STEP_S cycle in a single render
-      // frame -- an `if` would silently run the FSW cycle at a *slower
+      // than one nominal Config::FIRMWARE_TICK_S tick in a single render
+      // frame -- an `if` would silently run the firmware loop at a *slower
       // relative rate* the faster time is scaled (fewer corrections per
-      // orbit), which would visibly degrade pointing/detumble stability
-      // at high speeds for no physical reason. Catching up with a fixed-
-      // size `while` keeps the FSW cadence correct relative to simulated
+      // orbit), which would visibly degrade pointing/detumble stability at
+      // high speeds for no physical reason. Catching up with a fixed-size
+      // `while` keeps every task's cadence correct relative to simulated
       // time regardless of timeScale, the same fixed-step-accumulator
       // pattern PhysicsWorld::step() already uses internally.
-      adcsTimer += simDt;
-      while (adcsTimer > Config::TIME_STEP_S)
+      fswTickTimer += simDt;
+      while (fswTickTimer > Config::FIRMWARE_TICK_S)
       {
-        adcsTimer -= Config::TIME_STEP_S;
+        fswTickTimer -= Config::FIRMWARE_TICK_S;
 
-        IMU::Reading imuReading = sat.imu.sample(*sat.body, gravity, Config::TIME_STEP_S);
-        Magnetometer::Reading magReading = sat.magnetometer.sample(*sat.body, fieldNow, Config::TIME_STEP_S);
-        glm::vec3 sunDirWorld = adcs.sunPosition - sat.body->position;
-        StarTracker::Reading starReading = sat.starTracker.sample(*sat.body, sunDirWorld);
-        SunSensor::Reading sunReading = sat.sunSensor.sample(*sat.body, sunDirWorld);
-        // SunSensor has no eclipse model of its own (see its header:
-        // "valid is always true here... a scenario that wants eclipse-
-        // aware dropouts needs to gate this externally") -- a real coarse
-        // sun sensor reports no lock when the sun itself is physically
-        // blocked by Earth, not just when the geometric direction happens
-        // to be undefined, so the harness applies that blindness here.
-        // This also keeps TRIAD fallback (computeTriadFallback, ADCS.cpp)
-        // honest during eclipse: it already requires in.sunSensor.valid,
-        // but without this gate it would happily TRIAD off a sun
-        // direction the satellite couldn't actually observe.
-        sunReading.valid = sunReading.valid && !inEclipse;
+        bool adcsRan = flightSoftware.step(Config::FIRMWARE_TICK_S);
+        if (!adcsRan)
+          continue;
 
-        FSWInputs inputs;
-        inputs.imu = {imuReading.gyro, imuReading.accel};
-        inputs.mag = {magReading.field, true};
-        inputs.star = {starReading.attitude, starReading.valid};
-        inputs.sunSensor = {sunReading.sunDirBody, sunReading.valid};
-        // Last-known EPS telemetry -- this cycle's own consumption (wheels/
-        // torquers, computed below from what step() is about to command)
-        // hasn't happened yet, same "read before this cycle's effects"
-        // relationship inputs.wheelTelemetry[i].speedRadS already has with
-        // the wheel commands step() is about to issue.
-        inputs.power = {sat.battery.stateOfCharge(), sat.battery.voltage()};
-        for (int i = 0; i < NUM_WHEELS; i++)
-          inputs.wheelTelemetry[i] = {sat.wheels[i]->currentSpeed, sat.wheels[i]->healthFactor > 0.01f};
-        inputs.spacecraftPositionWorld = sat.body->position; // real orbital position (ECI meters) -- stands in for a real nav solution
-
-        FSWOutputs out = adcs.step(inputs, Config::TIME_STEP_S);
-
-        for (int i = 0; i < NUM_WHEELS; i++)
-          sat.wheels[i]->commandTorque(out.wheelCommands[i].torqueNm);
-        for (int i = 0; i < NUM_TORQUERS; i++)
-          sat.magnetorquers[i]->commandDipoleMoment(out.torquerCommands[i].momentAm2);
-
-        // =================== EPS (same 20 Hz cycle) ===================
+        // =================== EPS (same cadence as the ADCS task) ===================
         // Generation: sum every panel's cosine-law output against the same
-        // sun direction the star tracker/sun sensor were just sampled
-        // against -- zero while the real orbital position is in Earth's
-        // shadow (see EclipseModel::inEclipse above), closing this
-        // project's former "no orbital eclipse model" gap. Consumption: a
-        // fixed housekeeping/sensor draw plus each actuator's
-        // idle-plus-effort power for the commands just issued above -- see
-        // the Config::POWER_* comments for the model each term follows.
-        // Net power integrates straight into the battery.
+        // sun direction the star tracker/sun sensor read against -- zero
+        // while the real orbital position is in Earth's shadow (see
+        // EclipseModel::inEclipse above), closing this project's former "no
+        // orbital eclipse model" gap. Consumption: a fixed housekeeping/
+        // sensor draw plus each actuator's idle-plus-effort power for the
+        // commands the ADCS task just issued (read back from fswHal, which
+        // is what actually applied them) -- see the Config::POWER_*
+        // comments for the model each term follows. Net power integrates
+        // straight into the battery.
         float genW = 0.0f;
         if (!inEclipse)
           for (const SolarPanel &panel : sat.solarPanels)
@@ -465,10 +422,10 @@ int main()
                       Config::POWER_SUN_SENSOR_W;
         for (int i = 0; i < NUM_WHEELS; i++)
           drawW += Config::WHEEL_IDLE_POWER_W +
-                   std::abs(out.wheelCommands[i].torqueNm * sat.wheels[i]->currentSpeed) / Config::WHEEL_MOTOR_EFFICIENCY;
+                   std::abs(fswHal.lastWheelTorqueNm[i] * sat.wheels[i]->currentSpeed) / Config::WHEEL_MOTOR_EFFICIENCY;
         for (int i = 0; i < NUM_TORQUERS; i++)
           drawW += Config::TORQUER_IDLE_POWER_W +
-                   std::abs(out.torquerCommands[i].momentAm2) * Config::TORQUER_POWER_PER_AM2_W;
+                   std::abs(fswHal.lastTorquerMomentAm2[i]) * Config::TORQUER_POWER_PER_AM2_W;
 
         sat.battery.update(genW - drawW, Config::TIME_STEP_S);
         telemetry.netPowerW.push(genW - drawW);
@@ -533,6 +490,21 @@ int main()
     // already at the right place -- no separate marker needed.
     if (vis.showEarth)
       drawEarth(gui, earthTexture, currentJdNow);
+    if (vis.showSun)
+    {
+      float sunRadius = static_cast<float>(OrbitFrames::SUN_RADIUS_M);
+      if (sunTexture.isLoaded())
+        gui.drawTexturedSphere(adcs.sunPosition, sunRadius, TEXTURED_SPHERE_POLE_ALIGNMENT, sunTexture, /*unlit=*/true);
+      else
+        gui.drawSphere(adcs.sunPosition, sunRadius, {1.0f, 0.9f, 0.1f});
+    }
+    if (vis.showMoon)
+    {
+      if (moonTexture.isLoaded())
+        gui.drawTexturedSphere(moonPositionNow, static_cast<float>(OrbitFrames::MOON_RADIUS_M), TEXTURED_SPHERE_POLE_ALIGNMENT, moonTexture);
+      else
+        gui.drawSphere(moonPositionNow, static_cast<float>(OrbitFrames::MOON_RADIUS_M), {0.75f, 0.75f, 0.78f});
+    }
     if (vis.showOrbitPath)
       drawOrbitPath(gui, orbitPathPoints);
     if (vis.showGroundFootprint)
@@ -558,41 +530,14 @@ int main()
     if (vis.showTargetMarker)
       gui.drawSphere(adcs.target, Config::TARGET_MARKER_RADIUS_M, {0, 1.0f, 0});
 
-    if (vis.showSun)
-    {
-      // Sun marker sized to its *real* angular diameter (~32 arcmin) at
-      // its real current distance from the satellite (~1 AU), rather
-      // than a fixed prop radius -- r = d*tan(halfAngle).
-      float sunDistance = glm::length(adcs.sunPosition - sat.body->position);
-      float sunRadius = sunDistance * std::tan(glm::radians(Config::SUN_ANGULAR_DIAMETER_DEG * 0.5f));
-      gui.drawSphere(adcs.sunPosition, sunRadius, {1.0f, 0.9f, 0.1f});
-    }
-
-    if (vis.showMoon)
-    {
-      // Moon sphere at its real ECI position/size (MoonModel/OrbitFrames::
-      // MOON_RADIUS_M) -- unlike the Sun, close enough (~3.84e8m vs. the
-      // Sun's ~1.5e11m) that its real radius alone (not an angular-diameter
-      // trick) renders it as a visible disk at the same real distance. No
-      // texture asset for the Moon (unlike Earth) -- a plain lit gray sphere
-      // is enough to show its real position/motion.
-      gui.drawSphere(moonPositionNow, static_cast<float>(OrbitFrames::MOON_RADIUS_M), {0.75f, 0.75f, 0.78f});
-    }
-
+    // Target line
     if (vis.showTargetMarker)
-    {
-      // Pointing-error visualization: a line from the body straight to
-      // the target makes the *angular gap* between where the body
-      // actually points and where it should legible at a glance -- much
-      // easier to judge by eye than comparing the wireframe's own +Z
-      // arrow (drawn in drawSatelliteWireframe) against a distant marker.
       gui.drawLine(sat.body->position, adcs.target, {0, 1.0f, 0});
-    }
 
     if (vis.showWorldAxesGizmo)
       drawWorldAxesGizmo(gui);
 
-    drawADCSPanel(adcs, sat, telemetry, sim, epoch, vis, orbitState, earthTexture, groundTrackLatLonDeg, currentJdNow,
+    drawADCSPanel(flightSoftware, sat, telemetry, sim, epoch, vis, orbitState, earthTexture, groundTrackLatLonDeg, currentJdNow,
                   groundStationPasses, selectedPassIndex, trueErrDeg, inEclipse);
 
     imguiLayer.endFrame();

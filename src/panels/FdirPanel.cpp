@@ -37,10 +37,8 @@ static void formatFaultFlags(uint32_t flags, char *out, size_t outSize)
   }
 }
 
-void drawFdirTab(ADCS &adcs)
+void drawFdirTab(FDIR &fdir)
 {
-  FDIR &fdir = adcs.fdir;
-
   ImGui::SeparatorText("Status");
   if (fdir.state() == FdirState::NOMINAL)
     ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "NOMINAL");

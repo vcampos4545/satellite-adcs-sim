@@ -3,7 +3,6 @@
 #include <glm/gtc/quaternion.hpp>
 #include "Controllers.h"
 #include "FlightTypes.h"
-#include "FDIR.h"
 
 enum class ControllerType
 {
@@ -46,22 +45,32 @@ public:
   ControllerType controllerType = ControllerType::PID;
   DetumbleActuator detumbleActuator = DetumbleActuator::REACTION_WHEELS;
 
-  // Autonomous mode manager / fault monitor: runs every step() cycle and
-  // may override `mode` with a safe mode of its own choosing (see FDIR.h)
-  // -- the same "mode manager" vs. "GNC" split a real FSW's task structure
-  // has. Public so a UI panel can show its state/event log and tune
-  // thresholds live, same pattern as pidController()/lqrController() below.
-  FDIR fdir;
-
-  // What guidance/control actually execute this cycle -- `mode` unless
-  // `fdir` is in SAFE_HOLD and has overridden it. Read-only in spirit
-  // (step() recomputes it every cycle from `fdir.evaluate()`); exposed so
-  // a UI panel can show "commanded X, but actually flying Y because of a
-  // fault" instead of that distinction being invisible.
+  // What guidance/control actually execute this cycle -- `mode` unless a
+  // fault monitor has overridden it. Set from *outside* this class (see
+  // FlightSoftware::step(), which owns FDIR as a peer of ADCS and
+  // resolves this every cycle before calling control()) -- ADCS itself
+  // no longer runs FDIR internally; see the FlightSoftware.h header
+  // comment for why fault detection/mode override moved out to a peer
+  // module rather than staying nested here. Exposed publicly so a UI
+  // panel can show "commanded X, but actually flying Y because of a
+  // fault" instead of that distinction being invisible. The bare
+  // `ADCS::step()` convenience entry point (below) sets this to `mode`
+  // unconditionally, for FDIR-agnostic callers.
   PointingMode effectiveMode = PointingMode::TARGET;
 
   glm::vec3 target = {0.5f, 0.5f, 0.5f};      // world position for TARGET/SLEW/FINE_POINTING
   glm::vec3 sunPosition = {0.0f, 0.0f, 0.0f}; // world position for SUN_POINTING
+
+  // Whether `target` currently points at something real -- same "value +
+  // sibling valid flag" pattern FlightTypes.h's sensor samples already use
+  // (MagSample.valid, StarTrackerSample.valid, SunSensorSample.valid).
+  // When false, computeGuidance() falls back to sun-relative pointing for
+  // every target-dependent mode (TARGET/SLEW/FINE_POINTING/REFLECT) --
+  // the typical real-ADCS convention for "the commanded mode's reference
+  // isn't available right now," rather than the caller spoofing `target`
+  // itself to point somewhere else. Defaults true, matching `target`'s
+  // own always-has-a-value default.
+  bool targetValid = true;
 
   // World-frame ambient magnetic field, needed as TRIAD's reference vector
   // and for the B-dot/desaturation laws' frame-consistency -- a real
@@ -143,8 +152,8 @@ public:
   glm::vec3 magFieldBody{0.0f};
   glm::vec3 magFieldRateBody{0.0f};
 
-  // Most recent EPS reading -- exposed for telemetry/UI (and what fdir's
-  // low-battery fault is computed from, see step()).
+  // Most recent EPS reading -- exposed for telemetry/UI (and what
+  // FlightSoftware feeds FDIR's low-battery fault check from).
   float batterySoc = 1.0f;
   float batteryVoltageV = 0.0f;
 
@@ -190,8 +199,33 @@ public:
 
   void resetController();
 
-  // The FSW cycle: sensor data in, actuator commands out. Pure function of
-  // (current state, in, dt) -- no knowledge of where `in` came from.
+  // EKF "predict"+"correct": strapdown-integrates estimatedAttitude and
+  // (when a star-tracker/TRIAD measurement is available) corrects it,
+  // publishing attitudeUncertaintyDeg and the bias-corrected rate implicit
+  // in gyroBiasEstimate -- ADCS's own telemetry, exactly what a fault
+  // monitor consumes without computing itself. Must run before control()
+  // each cycle; split out as its own entry point (rather than folded into
+  // step() below) specifically so FlightSoftware::step() can run FDIR in
+  // between the two, using this cycle's freshly-updated telemetry.
+  void updateEstimator(const FSWInputs &in, float dt);
+
+  // Guidance + attitude control + desaturation + actuator allocation for
+  // this cycle, executing whatever `effectiveMode` is *already set to* --
+  // this no longer resolves effectiveMode itself (compare the old
+  // single-function step(), before FDIR moved out to FlightSoftware); the
+  // caller (FlightSoftware::step(), or this class's own step() below for
+  // FDIR-agnostic use) is responsible for setting it first. Requires
+  // updateEstimator() to have already run this cycle (recomputes the
+  // same bias-corrected rate updateEstimator's propagation used).
+  FSWOutputs control(const FSWInputs &in, float dt);
+
+  // Convenience entry point for FDIR-agnostic use (e.g. testing guidance/
+  // control/estimation in isolation): runs updateEstimator() then
+  // control() with effectiveMode forced equal to the commanded mode --
+  // i.e. behaves exactly as if no fault were ever active. Real fault-
+  // aware operation goes through FlightSoftware::step() instead, which
+  // owns FDIR as a peer of this class and resolves effectiveMode from it
+  // between the same two calls.
   FSWOutputs step(const FSWInputs &in, float dt);
 
   // Direct access to each controller's gains, for UI panels that want to

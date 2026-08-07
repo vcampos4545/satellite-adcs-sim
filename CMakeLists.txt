@@ -78,6 +78,7 @@ add_library(fsw STATIC
   src/fsw/ADCS.cpp
   src/fsw/Controllers.cpp
   src/fsw/FDIR.cpp
+  src/fsw/FlightSoftware.cpp
 )
 # PUBLIC include dir is src/fsw itself (not all of src) -- fsw's public
 # interface is only its own headers, matching the comment above ("tests/
@@ -98,6 +99,7 @@ add_executable(satellite-adcs-sim
   src/core/satellite_adcs_sim.cpp
   src/core/Cubesat.cpp
   src/core/GroundStations.cpp
+  src/core/SimFlightSoftwareHAL.cpp
   src/rendering/SatelliteRenderer.cpp
   src/rendering/MagneticFieldRenderer.cpp
   src/rendering/OrbitRenderer.cpp

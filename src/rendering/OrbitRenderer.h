@@ -13,6 +13,22 @@
 // ORBIT VISUALIZATION comment).
 // ---------------------------------------------------------------------------
 
+// Fixes VGL's textured-sphere mesh orientation for *any* equirectangular
+// texture (see drawEarth's own .cpp comment for the full derivation): VGL's
+// Texture loader flips images vertically on load
+// (stbi_set_flip_vertically_on_load), so without this correction, mesh
+// local +Y (where the sphere mesh's V=0 texture coordinate lands) samples
+// the source image's *bottom* row, not its top -- the sphere renders
+// upside-down. drawEarth composes this with an additional meridian
+// correction and a time-varying spin (real ECI/GMST alignment, meaningful
+// only for a body whose real orientation the scene actually models); this
+// constant alone -- no meridian correction, no spin -- is enough to make
+// any other textured sphere (Sun, Moon) render right-side-up, since
+// neither has a real rotation/prime-meridian model in this project to
+// align to in the first place.
+inline const glm::quat TEXTURED_SPHERE_POLE_ALIGNMENT =
+    glm::angleAxis(glm::radians(-90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+
 // Earth: a textured sphere at the world origin, at its real radius.
 //
 // Three rotations, composed in order (see drawEarth's own .cpp comment

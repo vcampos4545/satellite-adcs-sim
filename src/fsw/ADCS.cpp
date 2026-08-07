@@ -77,7 +77,7 @@ void ADCS::configure(const HardwareConfig &hw, const glm::quat &initialAttitude)
   gyroNoisePsd = GYRO_NOISE_STD_RAD_S * GYRO_NOISE_STD_RAD_S;
   gyroBiasWalkPsd = GYRO_BIAS_DRIFT_STD_RAD_S * GYRO_BIAS_DRIFT_STD_RAD_S;
 
-  effectiveMode = mode; // fdir hasn't run yet -- no fault to override with
+  effectiveMode = mode; // no fault monitor has run yet -- no fault to override with
   lastTunedMode = effectiveMode;
   retuneForMode();
 
@@ -156,7 +156,7 @@ void ADCS::retuneForMode()
   resetController(); // discard integral windup/state accumulated under the old tuning
 }
 
-FSWOutputs ADCS::step(const FSWInputs &in, float dt)
+void ADCS::updateEstimator(const FSWInputs &in, float dt)
 {
   lastGyroBody = in.imu.gyro;
   lastAccelBody = in.imu.accel;
@@ -209,29 +209,25 @@ FSWOutputs ADCS::step(const FSWInputs &in, float dt)
 
   float attTraceRad2 = covAA[0][0] + covAA[1][1] + covAA[2][2];
   attitudeUncertaintyDeg = glm::degrees(std::sqrt(std::max(attTraceRad2, 0.0f) / 3.0f));
+}
 
+FSWOutputs ADCS::control(const FSWInputs &in, float dt)
+{
   // Rate feedback to the attitude controller: bias-corrected, same as
-  // propagation above. A rate loop fed the raw (still-biased) gyro settles
-  // at a true rate equal to minus that bias -- using the EKF's own bias
-  // estimate here, not just for attitude propagation, is what actually
-  // fixes that instead of only bounding its effect.
+  // updateEstimator()'s own propagation. A rate loop fed the raw (still-
+  // biased) gyro settles at a true rate equal to minus that bias -- using
+  // the EKF's own bias estimate here, not just for attitude propagation,
+  // is what actually fixes that instead of only bounding its effect.
+  // Recomputed here (not passed through) since gyroBiasEstimate hasn't
+  // changed since updateEstimator() ran this same cycle -- cheap, and
+  // avoids adding state just to shuttle one vector between two calls.
   glm::vec3 rate = in.imu.gyro - gyroBiasEstimate;
 
-  // Autonomous mode manager / FDIR: decides what guidance/control actually
-  // execute this cycle, using exactly the FSW-derived signals available at
-  // this point (wheel health telemetry, the EKF's own confidence, and the
-  // bias-corrected rate above) -- never anything this class itself
-  // couldn't otherwise know. Runs even under manualOverride (a fault is
-  // still worth detecting/logging while a human has the stick), it just
-  // doesn't get to act until manual control is released -- see below.
-  FdirInputs fdirIn;
-  fdirIn.wheelTelemetry = in.wheelTelemetry;
-  fdirIn.attitudeUncertaintyDeg = attitudeUncertaintyDeg;
-  fdirIn.rateBody = rate;
-  fdirIn.batterySoc = batterySoc;
-  fdirIn.commandedMode = mode;
-  effectiveMode = fdir.evaluate(fdirIn, dt);
-
+  // `effectiveMode` is assumed already resolved by the caller before this
+  // runs -- FlightSoftware::step() sets it from FDIR (a peer module, not
+  // owned by this class -- see FlightSoftware.h), or this class's own
+  // step() below sets it equal to `mode` unconditionally for FDIR-
+  // agnostic use.
   if (effectiveMode != lastTunedMode)
   {
     retuneForMode();
@@ -255,13 +251,36 @@ FSWOutputs ADCS::step(const FSWInputs &in, float dt)
   return buildOutputs();
 }
 
+FSWOutputs ADCS::step(const FSWInputs &in, float dt)
+{
+  updateEstimator(in, dt);
+  effectiveMode = mode; // no fault monitor at this layer; see FlightSoftware::step() for the fault-aware entry point
+  return control(in, dt);
+}
+
 void ADCS::computeGuidance(const glm::vec3 &spacecraftPositionWorld, float dt)
 {
   if (effectiveMode == PointingMode::DETUMBLE)
     return; // no attitude target; computeControl uses a rate-only law instead
 
+  // Target-loss fallback: every target-dependent mode degrades to
+  // sun-relative pointing when `target` isn't currently meaningful (see
+  // targetValid's own comment in ADCS.h) -- the typical real-ADCS
+  // convention for "this mode's reference isn't available right now,"
+  // computed here at the guidance level rather than the caller spoofing
+  // `target` itself to fake a sun-pointing-equivalent direction. A local
+  // substitute mode, not a write to `effectiveMode` -- this is purely
+  // about which direction guidance aims at this cycle, not a real mode
+  // change (controller retuning, telemetry, etc. all still reflect the
+  // actually-commanded/actually-effective mode).
+  bool targetDependentMode = effectiveMode == PointingMode::TARGET ||
+                             effectiveMode == PointingMode::SLEW ||
+                             effectiveMode == PointingMode::FINE_POINTING ||
+                             effectiveMode == PointingMode::REFLECT;
+  PointingMode guidanceMode = (targetDependentMode && !targetValid) ? PointingMode::SUN_POINTING : effectiveMode;
+
   glm::vec3 pointDir;
-  switch (effectiveMode)
+  switch (guidanceMode)
   {
   case PointingMode::NADIR:
     // Real Earth-center direction -- spacecraftPositionWorld is the

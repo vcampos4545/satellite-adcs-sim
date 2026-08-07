@@ -12,6 +12,10 @@ add_executable(test_fdir test_fdir.cpp)
 target_link_libraries(test_fdir PRIVATE fsw)
 add_test(NAME fdir COMMAND test_fdir)
 
+add_executable(test_flight_software test_flight_software.cpp)
+target_link_libraries(test_flight_software PRIVATE fsw)
+add_test(NAME flight_software COMMAND test_flight_software)
+
 # Needs `rigidbody` too (not just `fsw`) -- SolarPanel::sample() takes a
 # real RigidBody, since it's a physics primitive living in the engine, not
 # FSW.

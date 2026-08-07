@@ -44,12 +44,22 @@ them, not something FSW code depends on or could tell from the inside.
 
 ## Hardware-Abstraction Boundary
 
-`ADCS`/`FDIR` (the flight software) never reference `RigidBody`,
-`PhysicsWorld`, or any sensor/actuator simulation type — see
-`src/fsw/FlightTypes.h`. `ADCS::step()` is a pure function of `(internal state,
-FSWInputs, dt) -> FSWOutputs`. This is the seam a HIL rig or real flight
-hardware would eventually replace one side of, and it's why `tests/`
-can build FSW logic against nothing but `glm` (see `tests/CMakeLists.txt`).
+`ADCS`/`FDIR`/`FlightSoftware`/`FlightSoftwareHAL` (the flight software)
+never reference `RigidBody`, `PhysicsWorld`, or any sensor/actuator
+simulation type — see `src/fsw/FlightTypes.h`. `FlightSoftware::step()` —
+which owns `ADCS` and `FDIR` as peers and is this project's actual
+firmware main-loop body (see "`FlightSoftware` / `SystemMode`" below) —
+only ever crosses the sim boundary through `FlightSoftwareHAL`, a
+pull-based sensor/actuator interface built entirely from plain
+`FlightTypes.h` data. This is the literal seam a HIL rig or real flight
+hardware would replace: a HIL adapter implements `FlightSoftwareHAL`
+against real ADC/I2C/SPI reads and driver writes instead of
+`src/core/SimFlightSoftwareHAL.h`/`.cpp` (this simulation's
+implementation), and `FlightSoftware`/`ADCS`/`FDIR` don't change at all.
+`ADCS::step()`/`control()`/`updateEstimator()` remain pure functions of
+`(internal state, FSWInputs, dt) -> FSWOutputs`, unaffected by any of
+this. It's also why `tests/` can build FSW logic against nothing but
+`glm` (see `tests/CMakeLists.txt`).
 
 ---
 
@@ -154,33 +164,60 @@ gating EPS generation (see "EPS" below), not for anything needing a
 precise penumbra transition.
 
 **Sun/Moon rendering** (harness, `satellite_adcs_sim.cpp`'s draw block):
-both are drawn at their real ECI positions, not scaled-for-visibility
-stand-ins — the Sun via `adcs.sunPosition` (already the real
-`SunModel::positionEci`), the Moon via a per-frame
-`MoonModel::positionEci` cast (`moonPositionNow`, held while paused, same
-pattern as `earthRelativePositionNow`). The Sun's marker radius is
-derived each frame from its real angular diameter (~32 arcmin) at its
-real current distance (`r = d * tan(halfAngle)`), since drawing it at its
-true ~1 AU distance makes an angular-diameter-based size the only way it
-reads as "the Sun" rather than a fixed-size prop; the Moon, close enough
-(~3.84e8 m vs. the Sun's ~1.5e11 m) that its true radius
-(`OrbitFrames::MOON_RADIUS_M`) alone renders as a visible disk, is drawn
-at that real size directly with no texture asset (a plain lit sphere).
-`Config::CAMERA_FAR` (2.0e11 m) is sized to clear the real Sun distance
-with margin — both markers would otherwise be silently clipped by the far
-plane despite their positions being computed correctly.
+both are drawn at their real ECI positions and real physical radii, not
+scaled-for-visibility stand-ins — the Sun via `adcs.sunPosition` (already
+the real `SunModel::positionEci`) and `OrbitFrames::SUN_RADIUS_M`, the
+Moon via a per-frame `MoonModel::positionEci` cast (`moonPositionNow`,
+held while paused, same pattern as `earthRelativePositionNow`) and
+`OrbitFrames::MOON_RADIUS_M`. True size at true distance for both, the
+same treatment Earth already gets — no angular-diameter-at-a-fixed-
+apparent-size trick. `Config::CAMERA_FAR` (2.0e11 m) is sized to clear
+the real Sun distance with margin — both markers would otherwise be
+silently clipped by the far plane despite their positions being computed
+correctly.
 
-**Scene lighting direction** (harness, main render loop, right before
-`gui.beginFrame()`): VGL's single directional light (`GUI::setLightDirection`)
-defaults to a fixed, arbitrary world-space direction with no notion of
-where the Sun actually is — the harness sets it to
-`normalize(adcs.sunPosition)` every frame (the real direction from Earth's
-center toward the Sun) so Earth's lit hemisphere actually corresponds to
-where the Sun marker is drawn. The shader's diffuse term is
+Both are drawn with real textures (`resources/textures/sun.jpg`/`moon.jpg`,
+falling back to a plain colored sphere via `Texture::isLoaded()` if the
+asset is missing — the same graceful-degradation pattern `earthTexture`
+already used) rotated by `OrbitRenderer.h`'s
+`TEXTURED_SPHERE_POLE_ALIGNMENT`, the same mesh-orientation fix `drawEarth`
+applies (see its own comment: VGL's Texture loader flips images
+vertically on load, so without this rotation the sphere renders upside-
+down). Unlike Earth, neither gets `drawEarth`'s additional meridian
+correction or GMST-based spin — those exist specifically to align Earth's
+texture to real ECI/geodetic longitude, and neither the Sun nor the Moon
+has a real rotation/prime-meridian model in this project to align to;
+`TEXTURED_SPHERE_POLE_ALIGNMENT` alone is enough to make either read as
+"a normal right-side-up sphere," not a claim about their true rotational
+orientation.
+
+The Sun is drawn **unlit** (`GUI::drawTexturedSphere`'s `unlit` parameter,
+new in VGL alongside this feature): a light source, not an object lit by
+one, so it should render at full texture brightness from every angle
+rather than being shaded/shadowed like an ordinary lit sphere would be on
+its own far side. The Moon is drawn normally lit, since it has no light
+of its own and should shade realistically under the same directional
+light Earth does.
+
+**Scene lighting** (harness, main render loop): VGL's single directional
+light (`GUI::setLightDirection`) defaults to a fixed, arbitrary world-space
+direction with no notion of where the Sun actually is — the harness sets
+it to `normalize(adcs.sunPosition)` every frame, right before
+`gui.beginFrame()` (the real direction from Earth's center toward the
+Sun) so Earth's lit hemisphere actually corresponds to where the Sun
+marker is drawn. The shader's diffuse term is
 `dot(normal, normalize(lightDir))`, i.e. `lightDir` must point *toward*
 the light source, not describe the Sun's position itself — using the raw
 `adcs.sunPosition` vector unnormalized (or negated) here would light the
 wrong hemisphere.
+
+Ambient light (`GUI::setAmbientLight`, new in VGL alongside this feature
+— previously a hardcoded `0.15` in the shader, not configurable per
+scene) is set once at startup to `Config::SCENE_AMBIENT_LIGHT` (0.35):
+VGL's original fixed value left Earth's night side reading as near-black,
+harsher than this project's visual goal of a softer still-visible dark
+side — not a claim about real earthshine/city-light brightness, purely a
+readability choice.
 
 **Global magnetic field-line visualization** (`traceDipoleFieldLines`/
 `drawMagneticFieldLines`, harness — distinct from `drawMagneticField`'s
@@ -286,26 +323,39 @@ threshold (`OrbitFrames::elevationAngleRad`, the same formula
 `drawGroundFootprint`'s coverage circle and pass prediction below both
 use), or returns `nullptr` if none currently do — a station outside the
 footprint is not a viable target at all, so there is deliberately no
-"closest regardless of visibility" fallback. When no station is
-reachable, the harness falls back to pointing at the real Sun position
-instead (`adcs.target = adcs.sunPosition`) — always something physically
-sensible to aim at, never an unreachable ground station and never an
-undefined target. The ground-station case is at real Earth-surface scale
+"closest regardless of visibility" fallback.
+
+When no station is reachable, the harness sets `adcs.targetValid = false`
+rather than spoofing `adcs.target` itself — the typical real-ADCS
+convention for "this mode's reference isn't available right now" is a
+guidance-level degradation, not the caller faking a different target
+position. `ADCS::computeGuidance()` reads `targetValid`: whenever the
+commanded/effective mode is `TARGET`/`SLEW`/`FINE_POINTING`/`REFLECT` and
+`targetValid` is false, guidance substitutes the same direction
+`SUN_POINTING` itself would compute
+(`normalize(sunPosition - spacecraftPositionWorld)`) for that cycle only —
+`REFLECT`'s own bisector math is skipped entirely in this case (no target
+means no bisector to compute; pointing the mirror straight at the sun is
+the sensible fallback). This never touches `adcs.mode`/`effectiveMode`
+themselves (so a manually-commanded mode via the FSW tab/`[1]`-`[7]` keys
+is never fought by this logic) or controller gain selection — only which
+direction guidance aims at. `adcs.target` is simply left stale (harmless
+— unread while `!targetValid`) when no station is selected. The
+ground-station case is at real Earth-surface scale
 (`OrbitFrames::EARTH_RADIUS_M`), the same reason the project's earlier
 arbitrary-surface-point target was placed there: comparable in magnitude
 to `spacecraftPositionWorld` (a well-conditioned
 `target - spacecraftPositionWorld` subtraction) rather than negligible
-next to it (catastrophic cancellation) — the Sun fallback doesn't have
-this problem either, being the *dominant* term in that same subtraction
-at ~1.5e11 m.
+next to it (catastrophic cancellation) — the sun-relative fallback
+doesn't have this problem either, `sunPosition` being the *dominant* term
+in that same subtraction at ~1.5e11 m.
 
 The harness only resets the attitude controller's integral windup
 (`adcs.resetController()`) when *what's selected* actually changes — a
-different ground station, or the Sun fallback engaging/disengaging — not
-every frame: `adcs.target`'s position updates continuously as the
-selected station's ECI position sweeps with Earth's rotation (or the Sun
-moves along its own much slower apparent path), which the controller
-should track smoothly, not react to as a discrete retarget each cycle.
+different ground station, or `targetValid` flipping — not every frame:
+`adcs.target`'s position updates continuously as the selected station's
+ECI position sweeps with Earth's rotation, which the controller should
+track smoothly, not react to as a discrete retarget each cycle.
 
 **Ground-station pass prediction** (`GroundStations.h/.cpp`'s
 `predictGroundStationPasses`, `GroundStationsPanel.h/.cpp`): the Ground
@@ -607,9 +657,24 @@ desaturating meaningfully faster than 1x.
 
 ## FDIR / Mode Manager
 
-`FDIR::evaluate()` runs every `step()` cycle, after the EKF correct step
-(so it has a fresh `attitudeUncertaintyDeg`) and before guidance/control
-(so its output can override what they compute against). See `src/fsw/FDIR.h`.
+`FDIR` is a peer module of `ADCS`, not nested inside it — both are owned
+by `FlightSoftware` (`src/fsw/FlightSoftware.h`/`.cpp`), this project's
+actual top-level cyclic entry point (see "Hardware-Abstraction Boundary"
+above and "`FlightSoftware` / `SystemMode`" below). This matches real
+flight-software convention (NASA cFS, JPL's F´, most smallsat stacks):
+fault/health monitoring is typically its own module sitting above or
+beside the subsystems it watches, with authority over system-wide mode,
+rather than being embedded inside and invoked by one subsystem's own
+control loop.
+
+`FDIR::evaluate()` runs every `FlightSoftware::step()` cycle, called
+directly by that function — after `ADCS::updateEstimator()` (the EKF
+predict+correct, so `evaluate()` has a fresh `attitudeUncertaintyDeg` and
+bias-corrected rate to read) and before `ADCS::control()` (so its output,
+written into `ADCS::effectiveMode`, is what guidance/control actually
+compute against that cycle). See `src/fsw/FDIR.h` for `FDIR`'s own public
+API, which this restructure left unchanged — only *who calls* `evaluate()`
+moved.
 
 **Detected conditions** (bitmask, more than one can be active):
 
@@ -641,6 +706,102 @@ commanded `mode`:
 `fdir.enabled = false` inhibits *acting* on faults (autonomy off) without
 disabling *detection*, matching real ground-commandable autonomy inhibits
 used during commissioning/testing.
+
+---
+
+## `FlightSoftware` / `SystemMode`
+
+`FlightSoftware` (`src/fsw/FlightSoftware.h`/`.cpp`) is this project's
+actual firmware main-loop body — the same shape a bare-metal (no RTOS)
+`main()`'s `while(1)` loop has, where each task (read a sensor, run the
+attitude estimator/controller, write actuator commands) is rate-gated
+against its own configured period rather than everything running in
+lockstep at one shared rate. `FlightSoftware::step(dt)` is meant to be
+called once per **firmware tick** (see `Config::FIRMWARE_TICK_S` in the
+harness — the fastest task's own period, so no task's cadence is ever
+missed), not once per ADCS cycle.
+
+### `FlightSoftwareHAL` / `FswSchedule` (`src/fsw/FlightSoftwareHAL.h`)
+
+`FlightSoftwareHAL` is a pull-based interface `FlightSoftware::step()`
+calls into on its own schedule — `readImu()`, `readMag()`,
+`readStarTracker()`, `readSunSensor()`, `readPower()`,
+`readWheelTelemetry()`, `readNavPosition()`, plus `commandWheelTorque()`/
+`commandTorquerMoment()` for actuator writes. Like the rest of `src/fsw/`
+it only ever sees plain `FlightTypes.h` data — this is the literal seam a
+HIL adapter would implement against real ADC/I2C/SPI reads and driver
+writes instead of simulated hardware (`src/core/SimFlightSoftwareHAL.h`/
+`.cpp` is that implementation for this simulation).
+
+`FswSchedule` gives each task its own period (`imuPeriodS`, `magPeriodS`,
+`starTrackerPeriodS`, `sunSensorPeriodS`, `powerPeriodS`, `navPeriodS`,
+`adcsPeriodS`), each representative of a real cubesat-class component's
+own rate rather than one shared number: a MEMS IMU runs far faster than a
+star tracker's image-processing-bound solve rate, and EPS/nav telemetry
+update far slower than either (see `Config::*_PERIOD_S` for this
+project's defaults). Wheel telemetry has no period of its own — it's read
+directly inside the ADCS task below, the same way a real wheel-driver
+telemetry read is usually coupled to the control task that commands it,
+not sampled independently.
+
+### `step(dt)`'s internal schedule
+
+Each sensor task is rate-gated independently: an elapsed-time accumulator
+per task (`imuTimer_`, `magTimer_`, ...) accumulates `dt` every call, and
+fires (pulling a fresh reading via the HAL, resetting its own timer) once
+it reaches that task's configured period — the asynchronous multi-rate
+scheduling shape a real bare-metal firmware main loop has. `configure()`
+"primes" every timer to its own period up front, so the very first
+`step()` call triggers an initial read of every sensor rather than
+running the first ADCS cycle against all-default-constructed samples.
+
+The ADCS task itself is rate-gated the same way, against `adcsPeriodS`,
+and runs the same "sense → evaluate health → act" order a real cyclic
+executive follows, using whichever cached reading each sensor task above
+most recently produced:
+
+1. `adcs.updateEstimator(in, adcsPeriodS)` — EKF predict+correct; publishes
+   `attitudeUncertaintyDeg` and (implicitly, via `gyroBiasEstimate`) the
+   bias-corrected rate as `ADCS`'s own telemetry.
+2. `fdir.evaluate(fdirIn, adcsPeriodS)` — reads that telemetry plus wheel
+   health/battery SOC/commanded mode (wheel telemetry pulled fresh here,
+   not from a cached schedule entry — see above), and resolves
+   `adcs.effectiveMode`. Runs even under `adcs.manualOverride` — a fault
+   is still worth detecting/logging while a human has the stick;
+   `adcs.control()` below is what actually respects `manualOverride`.
+3. `adcs.control(in, adcsPeriodS)` — guidance + attitude control +
+   desaturation + actuator allocation, executing whatever `effectiveMode`
+   step 2 just resolved, then pushes the resulting commands straight out
+   through `hal->commandWheelTorque()`/`commandTorquerMoment()` — no
+   struct returned for the caller to apply later, matching how real
+   firmware calls a driver write() in the same loop iteration it computed
+   the command.
+
+`FlightSoftware::step(dt)` returns `true` iff the ADCS task actually ran
+this call, so a caller that needs to know "did a new control cycle just
+happen" (this project's harness, for EPS/telemetry bookkeeping) doesn't
+have to assume every tick did something.
+
+`ADCS` also exposes a thin `step(in, dt)` convenience wrapper
+(`updateEstimator()` + `effectiveMode = mode` + `control()`) for
+FDIR-agnostic callers that never go through `FlightSoftware`/the HAL at
+all — this project's own `tests/test_adcs_control.cpp` and
+`tests/test_flight_software.cpp` use it directly, since they exercise
+guidance/control/estimation behavior without needing a fault monitor or
+scheduler in the loop.
+
+### `SystemMode`
+
+`SystemMode` (`SAFE`/`NOMINAL`, from `FlightSoftware::systemMode()`) is a
+coarse, top-level "what is the spacecraft doing right now" concept —
+coarser than `ADCS`'s own `PointingMode`, matching real flight software's
+own layered mode structure. It's currently derived 1:1 from
+`fdir.state()` (`FDIR` is this project's only source of "should we still
+be doing the mission" today), but is deliberately exposed under this
+stable, firmware-style name rather than requiring every caller to know
+`FDIR`'s own state enum — so a future addition to what can force SAFE
+(e.g. a thermal fault, once thermal is modeled) wouldn't change what
+callers have to know about.
 
 ---
 

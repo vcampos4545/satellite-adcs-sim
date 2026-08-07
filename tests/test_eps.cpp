@@ -6,7 +6,7 @@
 // (not just `fsw`) since SolarPanel::sample() takes a real RigidBody --
 // it's a physics primitive, not FSW.
 #include "test_common.h"
-#include "ADCS.h"
+#include "FlightSoftware.h"
 #include <rigidbody/RigidBody.h>
 #include <rigidbody/power/SolarPanel.h>
 #include <rigidbody/power/Battery.h>
@@ -55,57 +55,57 @@ int main()
 
   // FDIR: low battery forces SUN_POINTING without touching the commanded mode.
   {
-    ADCS adcs;
+    FlightSoftware fsw;
+    ADCS &adcs = fsw.adcs;
+    FakeFlightSoftwareHAL hal;
     HardwareConfig hw = makeTestHardwareConfig();
     glm::quat trueAtt(1, 0, 0, 0);
-    adcs.configure(hw, trueAtt);
+    float dt = 0.05f;
+    fsw.configure(hw, makeTestSchedule(dt), trueAtt, hal);
     adcs.mode = PointingMode::TARGET;
     adcs.target = glm::vec3(0, 0, 5.0f);
     adcs.ambientFieldWorld = glm::vec3(0, 0, 3e-5f);
-    float dt = 0.05f;
+    hal.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
+    hal.mag = {glm::vec3(0, 0, 3e-5f), true};
+    hal.star = {trueAtt, true};
+    hal.power = {0.1f, 6.5f}; // 10% SOC, below default 20% trigger
+    hal.navPosition = glm::vec3(0.0f);
+    for (int w = 0; w < NUM_WHEELS; w++)
+      hal.wheelTelemetry[w] = {0.0f, true};
     for (int i = 0; i < 50; i++)
-    {
-      FSWInputs in;
-      in.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
-      in.mag = {glm::vec3(0, 0, 3e-5f), true};
-      in.star = {trueAtt, true};
-      in.power = {0.1f, 6.5f}; // 10% SOC, below default 20% trigger
-      in.spacecraftPositionWorld = glm::vec3(0.0f);
-      for (int w = 0; w < NUM_WHEELS; w++)
-        in.wheelTelemetry[w] = {0.0f, true};
-      adcs.step(in, dt);
-    }
-    CHECK(adcs.fdir.state() == FdirState::SAFE_HOLD &&
-              (adcs.fdir.activeFaults() & FDIR_FAULT_LOW_BATTERY) &&
+      fsw.step(dt);
+    CHECK(fsw.fdir.state() == FdirState::SAFE_HOLD &&
+              (fsw.fdir.activeFaults() & FDIR_FAULT_LOW_BATTERY) &&
               adcs.mode == PointingMode::TARGET &&
               adcs.effectiveMode == PointingMode::SUN_POINTING &&
-              std::abs(adcs.batterySoc - 0.1f) < 1e-4f,
-          "Low battery (10%% SOC) -> SAFE_HOLD, effectiveMode -> SUN_POINTING, adcs.batterySoc mirrors input");
+              std::abs(adcs.batterySoc - 0.1f) < 1e-4f &&
+              fsw.systemMode() == SystemMode::SAFE,
+          "Low battery (10%% SOC) -> SAFE_HOLD, effectiveMode -> SUN_POINTING, adcs.batterySoc mirrors input, systemMode == SAFE");
   }
 
   // Healthy battery -- no fault.
   {
-    ADCS adcs;
+    FlightSoftware fsw;
+    ADCS &adcs = fsw.adcs;
+    FakeFlightSoftwareHAL hal;
     HardwareConfig hw = makeTestHardwareConfig();
     glm::quat trueAtt(1, 0, 0, 0);
-    adcs.configure(hw, trueAtt);
+    float dt = 0.05f;
+    fsw.configure(hw, makeTestSchedule(dt), trueAtt, hal);
     adcs.mode = PointingMode::TARGET;
     adcs.target = glm::vec3(0, 0, 5.0f);
     adcs.ambientFieldWorld = glm::vec3(0, 0, 3e-5f);
-    float dt = 0.05f;
+    hal.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
+    hal.mag = {glm::vec3(0, 0, 3e-5f), true};
+    hal.star = {trueAtt, true};
+    hal.power = {0.8f, 8.0f};
+    hal.navPosition = glm::vec3(0.0f);
+    for (int w = 0; w < NUM_WHEELS; w++)
+      hal.wheelTelemetry[w] = {0.0f, true};
     for (int i = 0; i < 50; i++)
-    {
-      FSWInputs in;
-      in.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
-      in.mag = {glm::vec3(0, 0, 3e-5f), true};
-      in.star = {trueAtt, true};
-      in.power = {0.8f, 8.0f};
-      in.spacecraftPositionWorld = glm::vec3(0.0f);
-      for (int w = 0; w < NUM_WHEELS; w++)
-        in.wheelTelemetry[w] = {0.0f, true};
-      adcs.step(in, dt);
-    }
-    CHECK(adcs.fdir.state() == FdirState::NOMINAL && adcs.effectiveMode == PointingMode::TARGET,
+      fsw.step(dt);
+    CHECK(fsw.fdir.state() == FdirState::NOMINAL && adcs.effectiveMode == PointingMode::TARGET &&
+              fsw.systemMode() == SystemMode::NOMINAL,
           "Healthy battery (80%% SOC) -> stays NOMINAL");
   }
 

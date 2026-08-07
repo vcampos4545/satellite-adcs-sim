@@ -35,10 +35,9 @@ void drawEarth(GUI &gui, const Texture &earthTexture, double currentJd)
   // reintroducing the earlier north/south pole bug (poleAlignment/spin
   // are unchanged).
   glm::quat meridianCorrection = glm::angleAxis(glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-  glm::quat poleAlignment = glm::angleAxis(glm::radians(-90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
   float gmst = static_cast<float>(OrbitFrames::gmstRad(currentJd));
   glm::quat spin = glm::angleAxis(gmst, glm::vec3(0.0f, 0.0f, 1.0f));
-  glm::quat earthRotation = spin * poleAlignment * meridianCorrection;
+  glm::quat earthRotation = spin * TEXTURED_SPHERE_POLE_ALIGNMENT * meridianCorrection;
   gui.drawTexturedSphere(glm::vec3(0.0f), static_cast<float>(OrbitFrames::EARTH_RADIUS_M), earthRotation, earthTexture);
 }
 

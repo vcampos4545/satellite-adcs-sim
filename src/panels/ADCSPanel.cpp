@@ -9,7 +9,7 @@
 #include "VisualizationPanel.h"
 #include <imgui.h>
 
-void drawADCSPanel(ADCS &adcs, Cubesat &sat,
+void drawADCSPanel(FlightSoftware &flightSoftware, Cubesat &sat,
                    SensorTelemetry &telemetry, SimControls &sim,
                    EpochControls &epoch, VisualizationSettings &vis,
                    const OrbitState &orbitState, const Texture &earthTexture,
@@ -17,6 +17,8 @@ void drawADCSPanel(ADCS &adcs, Cubesat &sat,
                    const std::vector<GroundStationPass> &groundStationPasses, int &selectedPassIndex,
                    float trueErrDeg, bool inEclipse)
 {
+  ADCS &adcs = flightSoftware.adcs;
+
   ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowSize(ImVec2(380, 560), ImGuiCond_FirstUseEver);
   ImGui::Begin("CubeSat ADCS");
@@ -40,7 +42,7 @@ void drawADCSPanel(ADCS &adcs, Cubesat &sat,
     }
     if (ImGui::BeginTabItem("FDIR"))
     {
-      drawFdirTab(adcs);
+      drawFdirTab(flightSoftware.fdir);
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("EPS"))
