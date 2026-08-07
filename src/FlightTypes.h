@@ -122,10 +122,12 @@ struct FSWInputs
   std::array<WheelTelemetry, NUM_WHEELS> wheelTelemetry{};
 
   // Stands in for a real navigation solution (GPS/ephemeris) -- needed by
-  // TARGET/SUN_POINTING guidance to compute a pointing direction relative
-  // to the spacecraft's own position. This sim's harness feeds it straight
-  // from simulation truth (no real nav modeled), same category of
-  // simplification as elsewhere in this project.
+  // NADIR/TARGET/SUN_POINTING/REFLECT guidance to compute a pointing
+  // direction relative to the spacecraft's own position. This sim's
+  // harness feeds it the real orbital position (ECI, meters, Earth's
+  // center at the origin -- see satellite_adcs_sim.cpp's OrbitState/
+  // OrbitPropagator), the same way a real flight computer's guidance
+  // would read its own navigation solution.
   glm::vec3 spacecraftPositionWorld{0.0f};
 };
 

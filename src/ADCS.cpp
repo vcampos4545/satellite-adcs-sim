@@ -264,10 +264,11 @@ void ADCS::computeGuidance(const glm::vec3 &spacecraftPositionWorld, float dt)
   switch (effectiveMode)
   {
   case PointingMode::NADIR:
-    // "Straight down" -- this sim has no orbital mechanics, so there's no
-    // real nadir vector (Earth-center direction) to compute; a fixed world
-    // direction is the honest equivalent here.
-    pointDir = glm::vec3(0, 0, -1);
+    // Real Earth-center direction -- spacecraftPositionWorld is the
+    // actual orbital position (ECI, Earth's center at the origin -- see
+    // FlightTypes.h), so nadir is just the direction back toward it, the
+    // same way TARGET/SUN_POINTING below derive their own directions.
+    pointDir = -glm::normalize(spacecraftPositionWorld);
     break;
   case PointingMode::SUN_POINTING:
     pointDir = glm::normalize(sunPosition - spacecraftPositionWorld);

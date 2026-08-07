@@ -95,6 +95,14 @@ add_executable(satellite-adcs-sim
 target_include_directories(satellite-adcs-sim PRIVATE src)
 target_link_libraries(satellite-adcs-sim PRIVATE fsw rigidbody vgl imgui)
 
+# Absolute path to resources/ (textures, ...) baked in at compile time --
+# this is a dev sim run straight from the build tree, not an installed/
+# packaged product, so an absolute source-tree path is simpler than a
+# POST_BUILD copy-next-to-the-executable step and works regardless of the
+# working directory the built binary is launched from.
+target_compile_definitions(satellite-adcs-sim PRIVATE
+  RESOURCES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/resources")
+
 # ---------------------------------------------------------------------------
 # Tests -- see tests/test_common.h and docs/TESTING.md.
 # ---------------------------------------------------------------------------

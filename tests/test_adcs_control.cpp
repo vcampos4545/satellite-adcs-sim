@@ -7,9 +7,43 @@
 #include "test_common.h"
 #include "ADCS.h"
 #include <glm/gtc/quaternion.hpp>
+#include <cmath>
 
 int main()
 {
+  // NADIR guidance targets -normalize(spacecraftPositionWorld) -- the
+  // harness feeds this field the real orbital position (ECI, Earth's
+  // center at the origin -- see docs/ALGORITHMS.md's "Orbital Mechanics"
+  // section), so nadir is just the direction back toward it. Given a
+  // known (LEO-radius-scale) position, the resulting targetAttitude must
+  // rotate body +Z exactly onto the direction back to the origin.
+  {
+    ADCS adcs;
+    HardwareConfig hw = makeTestHardwareConfig();
+    adcs.configure(hw, glm::quat(1, 0, 0, 0));
+    adcs.mode = PointingMode::NADIR;
+
+    glm::vec3 spacecraftPos = glm::normalize(glm::vec3(1.0f, 0.5f, -0.3f)) * 6.871e6f; // 500km-altitude-scale LEO position
+    glm::vec3 expectedNadirDir = -glm::normalize(spacecraftPos);
+
+    FSWInputs in;
+    in.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
+    in.mag = {glm::vec3(0, 0, 3e-5f), true};
+    in.star = {glm::quat(1, 0, 0, 0), true};
+    in.power = {1.0f, 8.4f};
+    in.spacecraftPositionWorld = spacecraftPos;
+    for (int w = 0; w < NUM_WHEELS; w++)
+      in.wheelTelemetry[w] = {0.0f, true};
+
+    adcs.step(in, 0.05f);
+
+    glm::vec3 achievedDir = adcs.targetAttitude * glm::vec3(0, 0, 1);
+    float angleErrDeg = glm::degrees(std::acos(glm::clamp(glm::dot(achievedDir, expectedNadirDir), -1.0f, 1.0f)));
+    CHECK(angleErrDeg < 0.01f,
+          "NADIR guidance: targetAttitude rotates body +Z toward -spacecraftPositionWorld (angle err = %.4f deg)",
+          angleErrDeg);
+  }
+
   // B-dot detumble: body rate trends down under the B-dot law against a
   // representative LEO field. A ~30uT field gives the magnetorquers very
   // little torque authority against even this small bus, so this checks

@@ -20,19 +20,27 @@ otherwise; SI units unless stated otherwise (kg, m, s, rad, N·m, T, W, J).
 
 ## Coordinate Frames
 
-This project has **no orbital mechanics** — no inertial-to-orbit frame
-transform, no LVLH frame, no orbital rate. Everything is either:
-
-- **World frame**: the simulation's fixed global frame. `target`,
-  `sunPosition`, `ambientFieldWorld` are all given in this frame.
+- **World frame is ECI**: Earth's center is the world origin, and
+  `RigidBody::position` (and everything derived from it — `target`,
+  `sunPosition`, `ambientFieldWorld`, `FSWInputs.spacecraftPositionWorld`)
+  is expressed in real meters in that frame. `sat.body->position` is
+  bridged from the real orbital state every frame (see "Orbital
+  Mechanics" below) — the satellite genuinely moves through real ECI
+  space; there is no separate small "scene" frame or visualization-only
+  scale factor. `RigidBody::orientation` (a world-frame quaternion)
+  relates world to body frame, via `world_vec = orientation * body_vec`
+  (and `body_vec = inverse(orientation) * world_vec`). Body +Z is the
+  payload/pointing axis every guidance mode aims (see "Guidance" below);
+  body -Z is the star tracker boresight, deliberately opposite it.
 - **Body frame**: fixed to the spacecraft, origin at its center of mass.
   Sensor readings, actuator axes, and the EKF state are all in this frame.
 
-`RigidBody::orientation` (a world-frame quaternion) is the only thing that
-relates the two, via `world_vec = orientation * body_vec` (and
-`body_vec = inverse(orientation) * world_vec`). Body +Z is the payload/
-pointing axis every guidance mode aims (see "Guidance" below); body -Z is
-the star tracker boresight, deliberately opposite it.
+FSW itself never knows any of this is ECI specifically — `ADCS`/`FDIR`
+only ever see the plain `FSWInputs`/`ADCS` fields (`spacecraftPositionWorld`,
+`sunPosition`, ...) through the ordinary hardware-abstraction boundary
+(see below), the same as they would against a HIL rig or real flight
+hardware. "World frame is ECI" is a fact about what the *harness* feeds
+them, not something FSW code depends on or could tell from the inside.
 
 ## Hardware-Abstraction Boundary
 
@@ -42,6 +50,124 @@ the star tracker boresight, deliberately opposite it.
 FSWInputs, dt) -> FSWOutputs`. This is the seam a HIL rig or real flight
 hardware would eventually replace one side of, and it's why `tests/`
 can build FSW logic against nothing but `glm` (see `tests/CMakeLists.txt`).
+
+---
+
+## Orbital Mechanics
+
+The satellite's real orbital position/velocity is truth-propagated by
+`spacecraft-dynamics-sim`'s `rigidbody/orbit/` module (double precision,
+`glm::dvec3`/`glm::dquat`), owned and stepped by this project's harness
+(`satellite_adcs_sim.cpp`) — not by `ADCS`, which stays hardware-abstracted
+and only ever sees the derived quantities below, and not by
+`PhysicsWorld`'s own integration, which stays float32.
+
+**Double-precision truth, bridged into `RigidBody` every frame**: a LEO
+orbital radius (~6.9e6 m) leaves float32 with only meter-level precision,
+and that error would compound every integration step over a mission that
+can run for months — so the *integration* itself happens in the
+double-precision `orbit/` module, not through `PhysicsWorld`'s own
+(float32) translational stepping. Each frame, the harness copies the
+result into `sat.body->position` as a single non-accumulating cast (see
+`rigidbody/orbit/OrbitState.h`'s header comment) — this is safe precisely
+*because* it's a fresh copy from the double-precision truth every frame,
+not something `PhysicsWorld` integrates on its own: `sat.body->velocity`
+is deliberately never set to match real orbital velocity, so
+`PhysicsWorld`'s own translational integration contributes nothing on
+top of it. The body also has `groundCollisionEnabled = false` (see
+`RigidBody.h` in the engine) — `PhysicsWorld`'s ground-collision
+resolution assumes a literal world-Z=0 ground plane, which doesn't exist
+in an Earth-centered frame where Z genuinely crosses zero every orbit.
+`CentralBodyGravity` (a float32 `ForceGenerator`, also in the engine)
+exists separately for shorter-duration/local-effect scenarios that don't
+need this precision — a body actually integrating its own trajectory
+under real gravity within `PhysicsWorld`, rather than having the
+double-precision truth bridged in.
+
+**Propagation**: RK4 integration of a 6-element `[position, velocity]`
+ECI state, summing a set of pluggable force models each stage
+(`rigidbody/orbit/OrbitForceModel.h`):
+
+- **Two-body gravity**: `a = -mu * r / |r|^3` (point-mass Earth).
+- **J2 perturbation**: the dominant secular effect a pure point-mass model
+  misses — Earth's oblateness causes real nodal regression (the orbital
+  plane precessing over time) and apsidal drift. Standard closed-form
+  acceleration (Vallado eq. 9-38); no higher-order zonal harmonics.
+
+This project's default orbit is ISS-like (500 km circular, 51.6°
+inclination), specified via classical orbital elements
+(`rigidbody/orbit/OrbitalElements.h`, the standard COE→RV conversion) —
+the same default altitude/inclination the project's earlier kinematic
+magnetic-field stand-in used, now driving a real trajectory instead of a
+fake phase angle.
+
+**Frames/time** (`rigidbody/orbit/OrbitFrames.h`, `OrbitTime.h`):
+spherical Earth (not WGS84 ellipsoidal — a documented simplification, not
+needed at this project's pointing/visualization precision), Julian Date
+epoch handling, and standard GMST (Vallado Alg. 15) for ECEF↔ECI rotation.
+
+**Sun direction** (`rigidbody/orbit/SunModel.h`): the standard low-precision
+solar-position formula (a few arcminutes accurate near J2000, degrading
+slowly further out) — nowhere near ephemeris-grade, which this project has
+no need for.
+
+**Eclipse** (`rigidbody/orbit/EclipseModel.h`): cylindrical shadow model —
+in shadow if the satellite is on the night side of Earth's center *and*
+within Earth's radius of the Earth-Sun line. Slightly overestimates
+eclipse duration versus the true conical umbra/penumbra; adequate for
+gating EPS generation (see "EPS" below), not for anything needing a
+precise penumbra transition.
+
+**Orbital elements / geodetic conversion, for the Orbit tab**
+(`rigidbody/orbit/OrbitalElements.h`'s `fromState()`, `OrbitFrames.h`'s
+`ecefToGeodetic`/`eciToGeodeticDeg`): the standard RV2COE algorithm
+(angular momentum/node/eccentricity vectors, vis-viva for semi-major
+axis) recovers classical elements (altitude, eccentricity, inclination,
+RAAN, argument of periapsis, true anomaly, period, apogee/perigee) from
+`orbitState`'s *real, propagated* position/velocity — displayed elements
+drift from the initial commanded values as J2 acts on the orbit (nodal
+regression, apsidal drift — see "Propagation" above), same as a real
+spacecraft's actual orbit does. The ground-track minimap and the 3D
+ground-footprint circle (satellite_adcs_sim.cpp's `drawGroundTrackMinimap`/
+`drawGroundFootprint`, structurally ported from `constellation-sim`'s
+`SatelliteRenderer`) both derive from this same real state — the
+footprint's coverage half-angle uses the standard elevation-angle
+ground-coverage formula (`rho = pi/2 - minElevation - eta`,
+`sin(eta) = R*cos(minElevation)/r`), with `minElevation = 0` (horizon-
+limited) by default since there's no ground-station concept yet to want a
+higher minimum from.
+
+**What the harness derives from this each cycle**, and feeds across the
+hardware-abstraction boundary as plain `FSWInputs`/`ADCS` fields (see
+"Coordinate Frames" above — FSW itself just sees these as ordinary
+vectors, the same as it would from a HIL rig or real hardware):
+
+- `FSWInputs.spacecraftPositionWorld` — the real orbital position itself
+  (`sat.body->position`, bridged from `orbitState` as described above),
+  used directly by `NADIR`/`TARGET`/`SUN_POINTING`/`REFLECT` guidance
+  (see "Guidance" below).
+- `adcs.ambientFieldWorld` — sampled from `CentralBodyMagneticField` (the
+  engine's tilted-dipole model, same formula the old kinematic stand-in
+  used) at the real position, instead of a fake orbital phase.
+- `adcs.sunPosition` — the real Sun position (`SunModel::positionEci`),
+  not an arbitrary nearby offset. This matters numerically, not just for
+  correctness: with `spacecraftPositionWorld` now at real (~6.9e6 m)
+  scale, encoding the sun *direction* as a small offset from it (the
+  previous "2 units away" convention) would suffer catastrophic
+  cancellation once `sunPosition - spacecraftPositionWorld` is computed
+  back out in float32 — the small offset gets rounded away against the
+  much larger base position. The real Sun position (~1.5e11 m) doesn't
+  have this problem: it's the *dominant* term in that subtraction, not a
+  small perturbation of one.
+- EPS generation gating — see "EPS" below.
+
+**`randomTarget()`'s scale** (harness, `satellite_adcs_sim.cpp`): for the
+same reason, `TARGET`/`SLEW`/`FINE_POINTING`'s random target is placed on
+Earth's real surface (`OrbitFrames::EARTH_RADIUS_M`) rather than an
+arbitrary unit-sphere point — comparable in magnitude to
+`spacecraftPositionWorld` (well-conditioned subtraction) rather than
+negligible next to it (catastrophic cancellation), and a physically
+sensible "ground target" besides.
 
 ---
 
@@ -65,7 +191,7 @@ axis is undefined).
 
 | Mode | `pointDir` |
 |---|---|
-| `NADIR` | fixed world `(0,0,-1)` — **not** a real Earth-center vector; this sim has no orbital position, so "down" is an honest fixed direction rather than a fabricated nadir |
+| `NADIR` | `-normalize(spacecraftPosition)` — world frame is ECI (see "Coordinate Frames" above), so this is a real Earth-center direction |
 | `SUN_POINTING` | `normalize(sunPosition - spacecraftPosition)` |
 | `TARGET` / `SLEW` / `FINE_POINTING` | `normalize(target - spacecraftPosition)` |
 | `REFLECT` | see below |
@@ -348,10 +474,11 @@ powerW = solarFluxWm2 * areaM2 * efficiency * max(0, cos(incidenceAngle))
 clamped to zero (not negative) once the sun is behind the panel. One
 panel per body face (6 total, 0.01 m² each — the cubesat's own 10x10cm
 face), `efficiency = 0.28` (representative triple-junction cubesat cell).
-`solarFluxWm2 = 1361` (solar constant at 1 AU). **Assumption**: no orbital
-eclipse model exists in this sim (no orbital position/time is simulated at
-all), so there's no shadow term — the sun is always "up" from wherever
-`sunPosition` currently is.
+`solarFluxWm2 = 1361` (solar constant at 1 AU). Generation is additionally
+zeroed while `EclipseModel::inEclipse()` (see "Orbital Mechanics" below)
+says the real orbital position is in Earth's shadow — cylindrical shadow
+only, not the true conical umbra/penumbra (a documented simplification,
+not a missing model).
 
 **Storage** (`Battery`, in `spacecraft-dynamics-sim`): Coulomb-counting —
 integrates net power (W) over `dt` (s) directly into energy (J), clamped

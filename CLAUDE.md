@@ -9,17 +9,23 @@ and control system) / flight-software simulation: attitude estimation
 (multiplicative EKF, star tracker primary / sun+magnetometer TRIAD
 fallback), guidance (multiple pointing modes), control (PID/LQR/cascaded,
 auto-tuned), actuation (reaction wheel pyramid + magnetorquer cluster),
-fault handling (wheel faults, an autonomous FDIR/mode-manager layer), and
-an EPS (solar panels + battery) model — for **one satellite at a time**.
+fault handling (wheel faults, an autonomous FDIR/mode-manager layer), a
+real single-satellite orbit (two-body + J2, propagated by the engine's
+`rigidbody/orbit/` module — see `docs/ALGORITHMS.md`'s "Orbital Mechanics"
+section), and an EPS (solar panels + battery, eclipse-gated) model — for
+**one satellite at a time**.
 
 It builds on [`spacecraft-dynamics-sim`](https://github.com/vcampos4545/spacecraft-dynamics-sim)
 (a sibling repo, fetched via CMake `FetchContent`, not vendored), a
 generic rigid-body physics engine with no spacecraft- or flight-software-
-specific code. This project explicitly does **not** do orbit-level mission
-design (constellation architecture, coverage, station-keeping); that's
+specific code. This project explicitly does **not** do orbit-*level
+mission design* (constellation architecture, coverage/access analysis
+across many satellites, station-keeping maneuver planning, conjunction
+screening) — the boundary is about scale (one vehicle vs. many), not
+about whether orbital motion exists; that multi-satellite scale problem is
 [`constellation-sim`](https://github.com/vcampos4545/constellation-sim)'s
-job, at a different fidelity/scale. See `README.md`'s "Scope" section for
-the full boundary.
+job, at a different fidelity. See `README.md`'s "Scope" section for the
+full boundary.
 
 `ADCS`/`FDIR` (`src/ADCS.*`, `src/FDIR.*`) are **hardware-abstracted**:
 they never reference `RigidBody`, `PhysicsWorld`, or any simulation

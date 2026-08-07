@@ -6,7 +6,15 @@
 #include <rigidbody/sensors/Magnetometer.h>
 #include <rigidbody/sensors/StarTracker.h>
 #include <rigidbody/sensors/SunSensor.h>
-#include <rigidbody/environment/MagneticField.h>
+#include <rigidbody/environment/central_body/CentralBodyMagneticField.h>
+#include <rigidbody/orbit/OrbitState.h>
+#include <rigidbody/orbit/OrbitalElements.h>
+#include <rigidbody/orbit/OrbitForceModel.h>
+#include <rigidbody/orbit/OrbitPropagator.h>
+#include <rigidbody/orbit/OrbitFrames.h>
+#include <rigidbody/orbit/OrbitTime.h>
+#include <rigidbody/orbit/SunModel.h>
+#include <rigidbody/orbit/EclipseModel.h>
 #include <rigidbody/power/SolarPanel.h>
 #include <rigidbody/power/Battery.h>
 #include "ADCS.h"
@@ -19,6 +27,8 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <string>
+#include <vector>
 #include <glm/gtc/constants.hpp>
 
 // ---------------------------------------------------------------------------
@@ -62,7 +72,12 @@ static Cubesat buildCubesatPyramid(PhysicsWorld &world, HardwareConfig &outHw)
       glm::vec3(0.1f, 0.1f, 0.1f), // 10 x 10 x 10 cm
       1.33f);                      // max mass of 1U cubesat (kg)
 
-  sat.body->position.z = sat.body->size.y * 3; // float above the ground
+  // Real orbital position (overwritten every frame from orbitState, in
+  // ECI meters -- see main()) means this body's Z genuinely crosses zero
+  // twice per orbit around an Earth centered at the world origin. The
+  // engine's ground-collision resolution assumes a literal Z=0 ground
+  // plane, which doesn't exist here, so this body opts out of it.
+  sat.body->groundCollisionEnabled = false;
 
   // IMU board mounted in a corner of the bus, not at the center of mass --
   // like a real PCB, so its accelerometer isn't trivially always-zero (it
@@ -158,113 +173,115 @@ static Cubesat buildCubesatPyramid(PhysicsWorld &world, HardwareConfig &outHw)
 }
 
 // ---------------------------------------------------------------------------
-// Random points on the unit sphere, scaled out -- one for arbitrary
-// pointing targets, one (farther out, for visual distinction) for the sun.
+// Random point on Earth's real surface, for an arbitrary ground-pointing
+// target (TARGET/SLEW/FINE_POINTING modes). Placed at real Earth radius,
+// not an arbitrary unit-sphere point -- now that spacecraftPositionWorld
+// is a real ECI position (~6.9e6 m for LEO), a target near the origin
+// would both be physically meaningless (inside Earth) and numerically
+// broken: `target - spacecraftPositionWorld` with a ~1-unit target and a
+// ~6.9e6-unit spacecraft position loses essentially all of target's
+// contribution to float32 rounding (catastrophic cancellation) -- the
+// direction would come out as just "toward Earth's center" regardless of
+// the random target chosen. A target at comparable (Earth-radius) scale
+// keeps this subtraction well-conditioned.
 // ---------------------------------------------------------------------------
 static glm::vec3 randomTarget()
 {
   static std::mt19937 rng(std::random_device{}());
   static std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
   glm::vec3 v(dist(rng), dist(rng), dist(rng));
-  return glm::normalize(v);
+  return glm::normalize(v) * static_cast<float>(OrbitFrames::EARTH_RADIUS_M);
 }
-
-static glm::vec3 randomSunPosition()
-{
-  static std::mt19937 rng(std::random_device{}());
-  static std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-  glm::vec3 v(dist(rng), dist(rng), dist(rng));
-  return glm::normalize(v) * 2.0f;
-}
-
-// ---------------------------------------------------------------------------
-// Randomly fails or degrades a wheel every so often, independent of
-// anything the flight software does -- a real bearing/driver fault doesn't
-// wait for a convenient moment. Faults persist once triggered; either
-// restart the scenario or use repairAll() to clear them.
-// ---------------------------------------------------------------------------
-struct WheelFaultInjector
-{
-  std::mt19937 rng{std::random_device{}()};
-  std::exponential_distribution<float> nextFaultDist;
-  float timeUntilNextFault;
-  float meanSecondsBetweenFaults;
-
-  explicit WheelFaultInjector(float meanSecondsBetweenFaultsIn)
-      : nextFaultDist(1.0f / meanSecondsBetweenFaultsIn),
-        meanSecondsBetweenFaults(meanSecondsBetweenFaultsIn)
-  {
-    timeUntilNextFault = nextFaultDist(rng);
-  }
-
-  // Rebuilds the exponential distribution around a new mean -- for a
-  // Simulation-panel slider to retune the fault rate live, without
-  // restarting the scenario.
-  void setMeanSecondsBetweenFaults(float mean)
-  {
-    mean = std::max(mean, 1.0f);
-    if (std::abs(mean - meanSecondsBetweenFaults) < 1e-6f)
-      return;
-    meanSecondsBetweenFaults = mean;
-    nextFaultDist = std::exponential_distribution<float>(1.0f / mean);
-  }
-
-  void update(float dt, std::vector<ReactionWheel *> &wheels)
-  {
-    timeUntilNextFault -= dt;
-    if (timeUntilNextFault > 0.0f)
-      return;
-    trigger(wheels);
-  }
-
-  void trigger(std::vector<ReactionWheel *> &wheels)
-  {
-    timeUntilNextFault = nextFaultDist(rng);
-
-    std::uniform_int_distribution<int> pickWheel(0, (int)wheels.size() - 1);
-    ReactionWheel *w = wheels[pickWheel(rng)];
-
-    std::uniform_real_distribution<float> roll(0.0f, 1.0f);
-    if (roll(rng) < 0.4f)
-    {
-      w->healthFactor = 0.0f; // complete failure
-    }
-    else
-    {
-      std::uniform_real_distribution<float> degrade(0.1f, 0.6f);
-      w->healthFactor = degrade(rng); // reduced torque, not dead
-    }
-  }
-
-  void repairAll(std::vector<ReactionWheel *> &wheels)
-  {
-    for (auto *w : wheels)
-      w->healthFactor = 1.0f;
-  }
-};
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 namespace Config
 {
-  // Camera
-  constexpr float CAMERA_NEAR = 0.1f;
-  constexpr float CAMERA_FAR = 100.0f;
+  // Satellite is a real 0.1m cubesat at a real ~6.9e6m orbital radius --
+  // rendered at its actual size, it would be a sub-pixel dot from any
+  // camera distance that also shows Earth. SATELLITE_VISUAL_SCALE
+  // inflates every *drawn* dimension of the satellite (wireframe/wheels/
+  // rods/arrows/mirror/grid/field arrows) around its real position, same
+  // "not to scale but at the right place" idea already used for the sun
+  // marker/B-field arrows -- it never touches the physical quantities
+  // (RigidBody size, wheel inertia, mount offsets used for actual
+  // dynamics) any of the FSW/physics math is computed from, only what
+  // gets handed to the renderer. Applied as: draw the true local geometry
+  // scaled up around the satellite's real center, i.e.
+  // `satPos + (trueOffset) * SATELLITE_VISUAL_SCALE` for anything offset
+  // from center, and `trueSize * SATELLITE_VISUAL_SCALE` for anything
+  // sized -- see drawSatelliteWireframe/drawReactionWheels/etc.
+  constexpr float SATELLITE_VISUAL_SCALE = 1000000.0f;
+
+  // Camera: follows the satellite's real ECI position (see main()'s
+  // orbit.setTarget() call each frame), so distances are tuned for a
+  // scene that spans everything from the now-visually-inflated satellite
+  // up to a ~6.9e6m orbital radius in the same world.
+  //
+  // MIN/INITIAL_DISTANCE are derived from SATELLITE_VISUAL_SCALE rather
+  // than independent constants, so they can't drift out of sync with it
+  // again if that scale ever changes: the satellite's own drawn geometry
+  // reaches SATELLITE_VISUAL_SCALE * 0.25 from its center (the body-axis
+  // arrows, drawSatelliteWireframe's largest extent), so MIN_DISTANCE
+  // (0.5x the full scale, 2x the arrows' own reach) keeps the camera from
+  // ending up inside the satellite's inflated geometry when fully zoomed
+  // in.
+  //
+  // MAX_DISTANCE must stay well *inside* CAMERA_FAR: OrbitalCamera clamps
+  // `distance` to [MIN_DISTANCE, MAX_DISTANCE], and if that range extends
+  // past the far clip plane, zooming out toward MAX_DISTANCE pushes the
+  // camera's target (and the whole scene around it) outside the far
+  // plane's render range, which just makes everything vanish -- not what
+  // "zoom out" should do. Earth's orbit diameter is ~1.37e7m; 1e8
+  // (~100,000 km, ~7x that) comfortably frames the whole Earth+orbit
+  // system with room to spare, and CAMERA_FAR sits a further 5x beyond
+  // that so the camera is never anywhere near clipping its own target.
+  // The near:far ratio this creates (~5e7) needs the logarithmic depth
+  // buffer enabled in main() (gui.setLogDepth) to avoid z-fighting a
+  // standard depth buffer can't handle at this range.
+  constexpr float CAMERA_NEAR = 10.0f;
+  constexpr float CAMERA_FAR = 5.0e8f;
   constexpr float CAMERA_FOV = 45.0f;
-  constexpr float CAMERA_INITIAL_DISTANCE = 1.0f;
-  constexpr float CAMERA_MIN_DISTANCE = 0.1f;
-  constexpr float CAMERA_MAX_DISTANCE = 100.0f;
+  constexpr float CAMERA_INITIAL_DISTANCE = SATELLITE_VISUAL_SCALE * 0.8f;
+  constexpr float CAMERA_MIN_DISTANCE = SATELLITE_VISUAL_SCALE * 0.5f;
+  constexpr float CAMERA_MAX_DISTANCE = 1.0e8f;
   constexpr float ZOOM_SENSITIVITY = 1.0f;
   constexpr float PAN_SENSITIVITY = 0.2f;
 
   // Coordinate grid: three walls of a box (floor + two back walls) meeting
   // at a corner behind/below the satellite, acting as a visual coordinate
-  // reference rather than an infinite ground plane -- sized against the
-  // 10cm cubesat itself (half-size a few times its 0.25m body-axis arrows),
-  // not the old 5m/1m ground-plane scale that dwarfed it.
+  // reference rather than an infinite ground plane. Half-size/step here
+  // are the *pre-SATELLITE_VISUAL_SCALE* values (still proportioned
+  // against the real 10cm cubesat/0.25m body-axis arrows); the call site
+  // in main() applies SATELLITE_VISUAL_SCALE, same as every other drawn
+  // satellite dimension.
   constexpr float GRID_HALF_SIZE = 3.0f;
   constexpr float GRID_STEP = 0.5f;
+
+  // A visible marker radius for world-frame point markers (the TARGET
+  // pointing mode's ground target) that, like the satellite, would
+  // otherwise render as a sub-pixel dot at real orbital-distance camera
+  // ranges -- unrelated to SATELLITE_VISUAL_SCALE (this is a mark on
+  // Earth's real surface, not part of the satellite), sized to be
+  // visible (a large-city-scale dot) against Earth's real 6.371e6m
+  // radius rather than to represent any real object's true size.
+  constexpr float TARGET_MARKER_RADIUS_M = 5.0e4f;
+
+  // Ground footprint / ground-track minimum elevation: the horizon-limited
+  // case (0 deg) shows the full circle a satellite can geometrically see
+  // any part of, not a specific ground station's usable pass window (which
+  // would want a higher minimum, e.g. 10 deg, to exclude low-elevation
+  // passes with poor link geometry -- not modeled here since there's no
+  // ground-station concept yet).
+  constexpr float FOOTPRINT_MIN_ELEVATION_DEG = 0.0f;
+
+  // Ground track: how much history to keep and how often to sample it.
+  // Sampling once every GROUND_TRACK_SAMPLE_INTERVAL_S of mission time
+  // (not every frame) at GROUND_TRACK_MAX_POINTS keeps the trail spanning
+  // multiple orbits without growing unbounded over a long-running mission.
+  constexpr int GROUND_TRACK_MAX_POINTS = 400;
+  constexpr float GROUND_TRACK_SAMPLE_INTERVAL_S = 15.0f;
 
   // Plot panel (world space, Y=-1.5 plane, X in [-0.5, 0.5], Z up)
   const glm::vec3 PLOT_ORIGIN{-0.5f, -1.5f, 0.0f};
@@ -272,7 +289,6 @@ namespace Config
   constexpr float PLOT_HEIGHT = 0.18f;
   constexpr float PLOT_GAP = 0.05f;
 
-  constexpr float MEAN_SECONDS_BETWEEN_FAULTS = 25.0f;
   constexpr float TUMBLE_KICK_RAD_S = 1.5f;
 
   constexpr int TELEMETRY_HISTORY_SAMPLES = 300;
@@ -291,12 +307,22 @@ namespace Config
   const glm::vec3 MIRROR_NORMAL_BODY{0.0f, 0.0f, 1.0f};
   constexpr float REFLECTED_RAY_LENGTH = 1.0f;
 
+  // Orbit visualization: PhysicsWorld's own coordinate frame *is* ECI
+  // here -- Earth's center is the world origin (real meters), and
+  // sat.body->position is bridged from orbitState every frame (see
+  // main()), so there's no separate render scale/offset to track
+  // anymore: Earth is drawn at its real radius, at the real origin, and
+  // the satellite is wherever its real orbital position puts it.
+  constexpr int ORBIT_PATH_POINTS = 120;       // segments in the predicted-path polyline
+  constexpr float ORBIT_PATH_REFRESH_S = 5.0f; // real seconds between path recomputes
+
   // EPS (electrical power subsystem) power budget: representative
   // wattages for every load on the bus, summed each ADCS cycle against
   // what the solar panels generate that same cycle -- see the FLIGHT
-  // SOFTWARE block in main(). No orbital eclipse model exists in this sim,
-  // so there's no shadow term; the sun is always "up" from wherever it's
-  // currently placed.
+  // SOFTWARE block in main(). Generation is gated by EclipseModel::
+  // inEclipse() against the real orbital position (see rigidbody/orbit/
+  // EclipseModel.h) -- cylindrical shadow only, not the true conical
+  // umbra/penumbra, a documented simplification (see docs/ALGORITHMS.md).
   constexpr float SOLAR_FLUX_WM2 = 1361.0f; // solar constant at 1 AU
 
   constexpr float POWER_OBC_BASELINE_W = 0.4f; // onboard computer + FSW housekeeping, always on
@@ -348,68 +374,10 @@ struct SensorTelemetry
 // Draw helpers
 // ---------------------------------------------------------------------------
 
-// Draws one axis-aligned grid plane: a fine lattice of lines over the two
-// "free" axes, held fixed at `fixedOffset` along the third (`fixedAxis`,
-// 0=X/1=Y/2=Z), spanning [-halfSize, halfSize] around `center` in the free
-// axes. The line running through each free axis's zero -- i.e. the pair
-// that crosses directly behind/below `center` -- is drawn in that axis's
-// own color instead of the faint grid color, so the two axis-color lines
-// on every wall read as "this plane's local coordinate cross," the same
-// role the colored line-through-the-origin played in the old single-plane
-// ground grid.
-static void drawGridPlane(GUI &gui, const glm::vec3 &center, int fixedAxis, float fixedOffset,
-                          float halfSize, float step, const glm::vec3 &gridColor,
-                          const glm::vec3 &axisColorU, const glm::vec3 &axisColorV)
-{
-  int u = (fixedAxis + 1) % 3;
-  int v = (fixedAxis + 2) % 3;
-
-  for (float i = -halfSize; i <= halfSize + 1e-4f; i += step)
-  {
-    bool onAxis = std::abs(i) < 1e-4f;
-
-    glm::vec3 p0(0.0f), p1(0.0f);
-    p0[fixedAxis] = p1[fixedAxis] = fixedOffset;
-    p0[u] = p1[u] = i;
-    p0[v] = -halfSize;
-    p1[v] = halfSize;
-    gui.drawLine(center + p0, center + p1, onAxis ? axisColorU : gridColor);
-
-    glm::vec3 q0(0.0f), q1(0.0f);
-    q0[fixedAxis] = q1[fixedAxis] = fixedOffset;
-    q0[v] = q1[v] = i;
-    q0[u] = -halfSize;
-    q1[u] = halfSize;
-    gui.drawLine(center + q0, center + q1, onAxis ? axisColorV : gridColor);
-  }
-}
-
-// Three walls of a box -- floor, back wall, side wall -- meeting at the
-// corner behind/below `center`, standing in for a coordinate grid at this
-// scenario's own (tiny, 10cm-cubesat) scale rather than the far larger
-// ground-plane grid most other scenarios want. Colors match the body-axis
-// arrows drawSatelliteWireframe() draws (X red, Y green, Z blue) so the
-// grid reads as an extension of the satellite's own body frame, not an
-// unrelated backdrop.
-static void drawSatelliteCoordinateBox(GUI &gui, const glm::vec3 &center, float halfSize, float step)
-{
-  const glm::vec3 gridColor{0.16f, 0.19f, 0.26f};
-  const glm::vec3 axisColorX{0.75f, 0.3f, 0.32f};
-  const glm::vec3 axisColorY{0.32f, 0.68f, 0.4f};
-  const glm::vec3 axisColorZ{0.32f, 0.48f, 0.85f};
-
-  // Floor (Z fixed, below center)
-  drawGridPlane(gui, center, 2, -halfSize, halfSize, step, gridColor, axisColorX, axisColorY);
-  // Back wall (Y fixed, behind center)
-  drawGridPlane(gui, center, 1, -halfSize, halfSize, step, gridColor, axisColorY, axisColorZ);
-  // Side wall (X fixed, behind center)
-  drawGridPlane(gui, center, 0, -halfSize, halfSize, step, gridColor, axisColorZ, axisColorX);
-}
-
 // Body drawn as a 12-edge wireframe box instead of a solid box.
 void drawSatelliteWireframe(GUI &gui, RigidBody *sat)
 {
-  glm::vec3 h = sat->size * 0.5f;
+  glm::vec3 h = sat->size * 0.5f * Config::SATELLITE_VISUAL_SCALE;
   glm::quat q = sat->orientation;
   glm::vec3 p = sat->position;
   const glm::vec3 color{1.0f, 1.0f, 0.0f};
@@ -441,7 +409,7 @@ void drawSatelliteWireframe(GUI &gui, RigidBody *sat)
   gui.drawLine(c[2], c[6], color);
   gui.drawLine(c[3], c[7], color);
 
-  float arrowLength = 0.25f;
+  float arrowLength = 0.25f * Config::SATELLITE_VISUAL_SCALE;
   gui.drawArrow(p, p + q * glm::vec3(1, 0, 0) * arrowLength, glm::vec3(1, 0, 0));
   gui.drawArrow(p, p + q * glm::vec3(0, 1, 0) * arrowLength, glm::vec3(0, 1, 0));
   gui.drawArrow(p, p + q * glm::vec3(0, 0, 1) * arrowLength, glm::vec3(0, 0, 1));
@@ -453,14 +421,28 @@ void drawSatelliteWireframe(GUI &gui, RigidBody *sat)
 // wheels that are actually healthy.
 void drawReactionWheels(GUI &gui, const std::vector<ReactionWheel *> &reactionWheels, RigidBody *sat)
 {
-  const float wheelRadius = 0.02f;
-  const float wheelThickness = 0.006f;
-  const float arrowLength = 0.05f;
+  const float wheelRadius = 0.02f * Config::SATELLITE_VISUAL_SCALE;
+  const float wheelThickness = 0.006f * Config::SATELLITE_VISUAL_SCALE;
+  const float arrowLength = 0.05f * Config::SATELLITE_VISUAL_SCALE;
 
   glm::vec3 totalAngular{0};
   for (auto &wheel : reactionWheels)
   {
-    glm::vec3 worldPos = wheel->getWorldMountPosition(*sat);
+    // wheel->getWorldMountPosition(*sat) computes sat->position +
+    // sat->orientation*mountPositionBody *inside the engine*, in float32,
+    // before we ever see the result -- at a real orbital position
+    // (~6.9e6 m), float32's ULP there (~0.8 m) is *larger* than the
+    // ~0.03 m mount offset itself, so that addition rounds the offset
+    // away almost entirely before SATELLITE_VISUAL_SCALE ever gets
+    // applied to it (this was the wheels'/rods' actual rendering bug --
+    // not a scale-factor mistake, a precision loss that happened before
+    // any of this function's own math runs). Fixed by reading
+    // mountPositionBody directly (a public field) and applying
+    // SATELLITE_VISUAL_SCALE to the *offset* first -- turning a ~0.03 m
+    // value into a ~600 m one, comfortably above that same ULP -- before
+    // rotating and adding it to sat->position, exactly the order
+    // drawMirror already uses for its own mount offset.
+    glm::vec3 worldPos = sat->position + sat->orientation * (wheel->mountPositionBody * Config::SATELLITE_VISUAL_SCALE);
     glm::vec3 worldAxis = wheel->getWorldSpinAxis(*sat);
 
     glm::vec3 color;
@@ -500,13 +482,15 @@ void drawReactionWheels(GUI &gui, const std::vector<ReactionWheel *> &reactionWh
 // the currently commanded dipole moment.
 static void drawMagnetorquers(GUI &gui, const std::vector<Magnetorquer *> &magnetorquers, RigidBody *sat)
 {
-  const float rodRadius = 0.006f;
-  const float rodLength = 0.07f;
-  const float arrowLength = 0.06f;
+  const float rodRadius = 0.006f * Config::SATELLITE_VISUAL_SCALE;
+  const float rodLength = 0.07f * Config::SATELLITE_VISUAL_SCALE;
+  const float arrowLength = 0.06f * Config::SATELLITE_VISUAL_SCALE;
 
   for (auto &rod : magnetorquers)
   {
-    glm::vec3 worldPos = rod->getWorldMountPosition(*sat);
+    // See drawReactionWheels' equivalent comment -- same precision fix:
+    // scale the local mount offset before rotating/adding it, not after.
+    glm::vec3 worldPos = sat->position + sat->orientation * (rod->mountPositionBody * Config::SATELLITE_VISUAL_SCALE);
     glm::vec3 worldAxis = rod->getWorldAxis(*sat);
 
     float satRatio = rod->getSaturationRatio();
@@ -530,7 +514,7 @@ static void drawMagnetorquers(GUI &gui, const std::vector<Magnetorquer *> &magne
 // just went red" with the boresight swinging toward the sun marker.
 static void drawStarTracker(GUI &gui, const StarTracker &tracker, RigidBody *sat, ADCS &adcs)
 {
-  const float length = 0.5f;
+  const float length = 0.5f * Config::SATELLITE_VISUAL_SCALE;
   glm::vec3 worldAxis = sat->orientation * tracker.boresightBody;
 
   glm::vec3 color;
@@ -549,9 +533,14 @@ static void drawStarTracker(GUI &gui, const StarTracker &tracker, RigidBody *sat
 // Not a physics body and not wired into ADCS/guidance at all.
 static void drawMirror(GUI &gui, RigidBody *sat)
 {
-  glm::vec3 mountOffsetBody = Config::MIRROR_NORMAL_BODY * (sat->size.z * 0.5f + Config::MIRROR_SIZE.z * 0.5f);
+  // mountOffsetBody is computed from the satellite's true (0.1m-scale)
+  // size, then scaled -- this is a pure body-frame local offset, not yet
+  // rotated into world space, so scaling it here (before applying
+  // orientation) is equivalent to and simpler than the
+  // offset-from-center trick drawReactionWheels/drawMagnetorquers use.
+  glm::vec3 mountOffsetBody = Config::MIRROR_NORMAL_BODY * (sat->size.z * 0.5f + Config::MIRROR_SIZE.z * 0.5f) * Config::SATELLITE_VISUAL_SCALE;
   glm::vec3 worldPos = sat->position + sat->orientation * mountOffsetBody;
-  gui.drawBox(worldPos, Config::MIRROR_SIZE, sat->orientation, {0.85f, 0.92f, 0.98f});
+  gui.drawBox(worldPos, Config::MIRROR_SIZE * Config::SATELLITE_VISUAL_SCALE, sat->orientation, {0.85f, 0.92f, 0.98f});
 }
 
 // Draws the incoming ray from the sun to the mirror, and the outgoing
@@ -563,10 +552,17 @@ static void drawMirror(GUI &gui, RigidBody *sat)
 // do either.
 static void drawSunReflection(GUI &gui, RigidBody *sat, const glm::vec3 &sunPosition)
 {
-  glm::vec3 mountOffsetBody = Config::MIRROR_NORMAL_BODY * (sat->size.z * 0.5f + Config::MIRROR_SIZE.z * 0.5f);
+  // Same scaled mountOffsetBody as drawMirror -- must match exactly so
+  // the reflection geometry originates from the same point the mirror is
+  // actually drawn at.
+  glm::vec3 mountOffsetBody = Config::MIRROR_NORMAL_BODY * (sat->size.z * 0.5f + Config::MIRROR_SIZE.z * 0.5f) * Config::SATELLITE_VISUAL_SCALE;
   glm::vec3 mirrorPos = sat->position + sat->orientation * mountOffsetBody;
   glm::vec3 normalWorld = glm::normalize(sat->orientation * Config::MIRROR_NORMAL_BODY);
 
+  // sunPosition is the real Sun position (~1.5e11 m away, see main()) --
+  // mirrorPos sitting a few km from the satellite's real orbital position
+  // is negligible against that distance, so this direction is unaffected
+  // by the mirror-offset visual scaling above.
   glm::vec3 incidentDir = glm::normalize(mirrorPos - sunPosition); // sun -> mirror
   gui.drawLine(sunPosition, mirrorPos, {1.0f, 0.5f, 0.9f});
 
@@ -576,30 +572,32 @@ static void drawSunReflection(GUI &gui, RigidBody *sat, const glm::vec3 &sunPosi
     return;
 
   glm::vec3 reflectedDir = incidentDir - 2.0f * glm::dot(incidentDir, normalWorld) * normalWorld;
-  gui.drawLine(mirrorPos, mirrorPos + reflectedDir * Config::REFLECTED_RAY_LENGTH, {1.0f, 0.5f, 0.9f});
+  gui.drawLine(mirrorPos, mirrorPos + reflectedDir * Config::REFLECTED_RAY_LENGTH * Config::SATELLITE_VISUAL_SCALE, {1.0f, 0.5f, 0.9f});
 }
 
 // Visualizes the ambient field the satellite is sitting in: a small grid of
 // arrows around the body, all pointing the same direction/magnitude, since
 // the field varies negligibly over a cubesat-sized volume (its gradient
 // scale is Earth-sized, not cubesat-sized) -- what varies is the field
-// *over time* as the kinematic orbit in MagneticField sweeps through it
-// (see MagneticField.h). A distinct, brighter arrow at the body itself
-// marks the same vector so it reads clearly against the grid.
+// *over time* as the real orbit (see OrbitPropagator/CentralBodyMagneticField
+// in main()) sweeps through it. A distinct, brighter arrow at the body
+// itself marks the same vector so it reads clearly against the grid.
 static void drawMagneticField(GUI &gui, const glm::vec3 &fieldWorldT, glm::vec3 satPos)
 {
-  // Scales a ~20-60 uT LEO field into a visible arrow length at cubesat
-  // scene scale (satellite ~0.1m, grid spacing 1m).
+  // Scales a ~20-60 uT LEO field into a visible arrow length, then applies
+  // SATELLITE_VISUAL_SCALE like every other satellite-local dimension so
+  // the field arrows stay proportionate to the now-much-bigger satellite
+  // instead of shrinking to nothing next to it.
   constexpr float FIELD_VISUAL_SCALE = 8000.0f;
   const glm::vec3 fieldColor{0.2f, 0.9f, 0.9f};
 
-  glm::vec3 arrow = fieldWorldT * FIELD_VISUAL_SCALE;
+  glm::vec3 arrow = fieldWorldT * FIELD_VISUAL_SCALE * Config::SATELLITE_VISUAL_SCALE;
 
   gui.drawArrow(satPos, satPos + arrow, fieldColor, 2.0f);
 
   const int gridN = 2; // -gridN..+gridN in each of x,y -> 5x5 grid
-  const float spacing = 0.6f;
-  const float gridHeight = -0.7f; // below the satellite, out of the way of the sat/wheels/rods
+  const float spacing = 0.6f * Config::SATELLITE_VISUAL_SCALE;
+  const float gridHeight = -0.7f * Config::SATELLITE_VISUAL_SCALE; // below the satellite, out of the way of the sat/wheels/rods
   for (int ix = -gridN; ix <= gridN; ++ix)
   {
     for (int iy = -gridN; iy <= gridN; ++iy)
@@ -608,6 +606,394 @@ static void drawMagneticField(GUI &gui, const glm::vec3 &fieldWorldT, glm::vec3 
       gui.drawArrow(base, base + arrow, fieldColor * 0.6f);
     }
   }
+}
+
+// Predicted orbit path: propagates a *copy* of the current orbital state
+// forward for one estimated period (vis-viva, from the current
+// position/velocity -- exact for the unperturbed two-body case, a good
+// approximation with J2 included since J2 doesn't secularly change
+// semi-major axis to first order) using the same two-body+J2 force model
+// the real propagator uses, sampling numPoints evenly-spaced points.
+// Returns real ECI-meter points (world origin = Earth's center, matching
+// PhysicsWorld's own frame here), ready to draw directly. Recomputed
+// periodically (not every frame) by the caller -- see
+// ORBIT_PATH_REFRESH_S -- since nothing here is cheap enough to be worth
+// redoing 60 times a second for a path that only drifts slowly (mainly
+// from J2) cycle to cycle.
+static std::vector<glm::vec3> computePredictedOrbitPath(const OrbitState &current, int numPoints)
+{
+  double mu = TwoBodyGravity{}.mu;
+  double rMag = glm::length(current.position);
+  double vMagSq = glm::dot(current.velocity, current.velocity);
+  double semiMajorAxisM = 1.0 / (2.0 / rMag - vMagSq / mu); // vis-viva
+  double period = 2.0 * M_PI * std::sqrt(semiMajorAxisM * semiMajorAxisM * semiMajorAxisM / mu);
+
+  OrbitPropagator pathPropagator;
+  pathPropagator.addForceModel(std::make_unique<TwoBodyGravity>());
+  pathPropagator.addForceModel(std::make_unique<J2Perturbation>());
+
+  OrbitState state = current;
+  double dt = period / numPoints;
+
+  std::vector<glm::vec3> points;
+  points.reserve(numPoints + 1);
+  points.push_back(glm::vec3(state.position));
+  for (int i = 0; i < numPoints; i++)
+  {
+    pathPropagator.step(state, dt);
+    points.push_back(glm::vec3(state.position));
+  }
+  return points;
+}
+
+static void drawOrbitPath(GUI &gui, const std::vector<glm::vec3> &pathPoints)
+{
+  const glm::vec3 pathColor{0.3f, 0.7f, 1.0f};
+  for (size_t i = 0; i + 1 < pathPoints.size(); i++)
+    gui.drawLine(pathPoints[i], pathPoints[i + 1], pathColor, 1.5f);
+}
+
+// World coordinate-axes gizmo: three world-aligned (not body-aligned)
+// arrows anchored to a fixed offset from the *camera*, not the scene, so
+// they sit in a fixed screen corner and visibly rotate as the user orbits
+// the camera -- the same idea as the axis gizmo in Blender/Unity/
+// constellation-sim. VGL has no second-viewport/HUD render pass
+// (GUI::beginFrame() sets the view/projection uniforms once per frame
+// from `camera`, see GUI.cpp -- there's no mid-frame camera swap to draw
+// a classic screen-space overlay with), so this gets the same visual
+// result entirely in world space instead: placed a small *fixed* world
+// distance in front of the camera (independent of the main camera's
+// current zoom distance to the satellite/Earth, which ranges from
+// hundreds of thousands to tens of millions of units), offset toward one
+// corner using the camera's own basis vectors and FOV/aspect, sized
+// proportionally to that same fixed distance. Because the scene the
+// gizmo might otherwise be confused with (Earth, the orbit path, the
+// satellite) is always vastly farther from the camera than this, it
+// naturally renders in front via ordinary depth testing -- no separate
+// pass or depth-clear needed.
+// World coordinate-axes gizmo, drawn in **screen space** via ImGui's
+// foreground draw list -- not as 3D world geometry. An earlier version of
+// this drew three arrows anchored to a fixed world-space offset from the
+// camera, sized to look constant regardless of zoom; that technique is
+// fundamentally fighting the 3D pipeline (depth testing against a scene
+// spanning 0.1m to 1e8m, the logarithmic depth buffer's own precision
+// characteristics at close range, perspective distortion changing the
+// arrows' apparent proportions with FOV/aspect) to fake something that
+// isn't really a 3D object at all -- a fixed-screen-position orientation
+// indicator. constellation-sim's SatelliteRenderer::drawAxesOverlay()
+// does this the direct way: skip 3D rendering for the gizmo entirely,
+// project each world axis (a unit vector) onto the screen using simple
+// dot products against the camera's own right/up basis vectors (an
+// orthographic-style projection -- exactly right here, since the gizmo
+// is meant to show *orientation only*, not position or perspective), and
+// draw the result as 2D lines/triangles directly. No depth testing, no
+// clip planes, no scale/distance math to get right -- ported here with
+// this project's own axis color convention.
+static void drawWorldAxesGizmo(GUI &gui)
+{
+  const ImGuiIO &io = ImGui::GetIO();
+  ImDrawList *dl = ImGui::GetForegroundDrawList();
+
+  const float margin = 80.0f; // pixels from the corner
+  const float arm = 50.0f;    // pixel length of each fully-foreshortened axis
+  const ImVec2 origin(margin, io.DisplaySize.y - margin); // bottom-left corner
+
+  dl->AddCircleFilled(origin, arm * 0.65f, IM_COL32(0, 0, 0, 120), 32);
+
+  // camera right -> screen +X, camera up -> screen -Y (screen Y grows
+  // downward) -- dot(axis, basis) is exactly the orthographic projection
+  // of a unit axis onto that screen direction, foreshortened correctly
+  // as the camera rotates since it's already just the cosine of the
+  // angle between them.
+  glm::vec3 camRight = gui.camera.getRight();
+  glm::vec3 camUp = gui.camera.getUpVector();
+  auto project = [&](glm::vec3 axisDir) -> ImVec2
+  {
+    float sx = glm::dot(camRight, axisDir) * arm;
+    float sy = -glm::dot(camUp, axisDir) * arm;
+    return ImVec2(origin.x + sx, origin.y + sy);
+  };
+
+  // Same X=red/Y=green/Z=blue convention already used for the satellite's
+  // own body-axis arrows (drawSatelliteWireframe) and the coordinate grid
+  // (drawGridPlane) -- this reads as "the same axis colors, just showing
+  // world orientation instead of body orientation."
+  struct Axis
+  {
+    glm::vec3 dir;
+    ImU32 color;
+  };
+  const Axis axes[3] = {
+      {{1.0f, 0.0f, 0.0f}, IM_COL32(217, 77, 82, 230)},
+      {{0.0f, 1.0f, 0.0f}, IM_COL32(82, 173, 102, 230)},
+      {{0.0f, 0.0f, 1.0f}, IM_COL32(82, 122, 217, 230)},
+  };
+
+  for (const Axis &axis : axes)
+  {
+    ImVec2 tip = project(axis.dir);
+    dl->AddLine(origin, tip, axis.color, 2.0f);
+
+    float dx = tip.x - origin.x, dy = tip.y - origin.y;
+    float len = std::sqrt(dx * dx + dy * dy);
+    if (len < 1.0f)
+      continue; // axis nearly edge-on to the screen -- no visible arrowhead to draw
+    float ux = dx / len, uy = dy / len;
+    float px = -uy * 4.0f, py = ux * 4.0f;
+    dl->AddTriangleFilled(
+        ImVec2(tip.x, tip.y),
+        ImVec2(tip.x - ux * 9.0f + px, tip.y - uy * 9.0f + py),
+        ImVec2(tip.x - ux * 9.0f - px, tip.y - uy * 9.0f - py),
+        axis.color);
+  }
+}
+
+// Earth: a textured sphere at the world origin, at its real radius --
+// PhysicsWorld's own frame here *is* ECI (see main()), so there's no
+// separate render scale/offset.
+//
+// Two rotations, composed in order:
+//  1. Pole alignment: VGL's sphere mesh (MeshGen::sphere) maps its UV v=0
+//     (mesh ring index 0) to the mesh's local +Y -- but VGL's Texture
+//     loader calls stbi_set_flip_vertically_on_load(true) (see
+//     VGL/src/Texture.cpp), so the pixel row that ends up at v=0 is the
+//     *bottom* of the source image, not the top. For a standard
+//     equirectangular Earth texture (top row = North Pole), that means
+//     mesh local +Y actually samples the South Pole, and local -Y
+//     samples the North Pole -- the opposite of the naive assumption.
+//     A -90 deg rotation about X maps local -Y (the real North Pole
+//     content) to world +Z (this scene's "up"/polar convention, the same
+//     axis GMST/OrbitFrames rotates about) -- independent of time, it
+//     only fixes the mesh's pole axis, it isn't itself Earth's rotation.
+//     (A previous version of this used +90 deg, reasoning from the mesh
+//     UVs alone without accounting for the texture-loader flip -- that
+//     put the correct polar axis in place but with North and South
+//     swapped, which is exactly the "sideways, then upside-down" order
+//     these two bugs actually showed up in.)
+//  2. Spin: +Z is now the correct polar axis, so rotating about it by the
+//     current Greenwich sidereal angle is the real ECEF->ECI rotation
+//     (same convention orbitState/OrbitFrames.h use) -- this is what
+//     actually makes Earth visibly rotate over time.
+// Composed as spin * poleAlignment (apply pole alignment first, then
+// spin about the now-correct axis -- quaternion composition applies the
+// right-hand operand first).
+static void drawEarth(GUI &gui, const Texture &earthTexture, double currentJd)
+{
+  glm::quat poleAlignment = glm::angleAxis(glm::radians(-90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+  float gmst = static_cast<float>(OrbitFrames::gmstRad(currentJd));
+  glm::quat spin = glm::angleAxis(gmst, glm::vec3(0.0f, 0.0f, 1.0f));
+  glm::quat earthRotation = spin * poleAlignment;
+  gui.drawTexturedSphere(glm::vec3(0.0f), static_cast<float>(OrbitFrames::EARTH_RADIUS_M), earthRotation, earthTexture);
+}
+
+// Coverage half-angle (radians): the angular radius, from Earth's center,
+// of the surface circle a satellite at satPosEci can see at or above
+// minElevationRad -- shared by the 3D footprint (drawGroundFootprint) and
+// the 2D ground-track minimap's footprint overlay, so the two can never
+// drift out of sync with each other.
+//
+// With eta the satellite's nadir angle at which the local horizon
+// (elevation = minElevationRad) is reached,
+//   sin(eta) = R * cos(eps) / r         (R = Earth radius, r = sat radius, eps = min elevation)
+//   rho = pi/2 - eps - eta
+// standard ground-coverage geometry (a right triangle formed by Earth's
+// center, the satellite, and the point on the horizon circle). Returns
+// <= 0 if the satellite is too low/close for any point to reach
+// minElevationRad, in which case there's no footprint to draw.
+static double computeFootprintHalfAngleRad(const glm::dvec3 &satPosEci, double minElevationRad)
+{
+  double r = glm::length(satPosEci);
+  double R = OrbitFrames::EARTH_RADIUS_M;
+  double eta = std::asin(glm::clamp(R * std::cos(minElevationRad) / r, 0.0, 1.0));
+  return glm::half_pi<double>() - minElevationRad - eta;
+}
+
+// Ground footprint: the small circle on Earth's surface a satellite at
+// satPosEci can see at or above minElevationRad, plus a dashed nadir line
+// from the surface up to the satellite -- ported from constellation-sim's
+// SatelliteRenderer::drawCoverageFootprint (same geometry, this project's
+// own real ECI position/PhysicsWorld-frame convention instead of a
+// separately-scaled scene).
+static void drawGroundFootprint(GUI &gui, const glm::dvec3 &satPosEci, double minElevationRad)
+{
+  double rho = computeFootprintHalfAngleRad(satPosEci, minElevationRad);
+  if (rho <= 0.0)
+    return; // satellite too low/close for any point to reach minElevationRad
+
+  float cosRho = static_cast<float>(std::cos(rho));
+  float sinRho = static_cast<float>(std::sin(rho));
+
+  glm::vec3 sub = glm::normalize(glm::vec3(satPosEci)); // sub-satellite direction
+
+  // Orthonormal basis perpendicular to sub, for tracing the small circle.
+  glm::vec3 ref = (std::abs(glm::dot(sub, glm::vec3(0, 0, 1))) > 0.99f) ? glm::vec3(1, 0, 0) : glm::vec3(0, 0, 1);
+  glm::vec3 t1 = glm::normalize(glm::cross(sub, ref));
+  glm::vec3 t2 = glm::cross(sub, t1); // already unit (sub, t1 orthonormal)
+
+  const int segments = 96;
+  const float surfaceOffset = static_cast<float>(OrbitFrames::EARTH_RADIUS_M) * 1.001f; // just above the surface, avoids z-fighting
+  const glm::vec3 footprintColor{0.0f, 0.85f, 1.0f};
+
+  glm::vec3 prev{0.0f};
+  for (int i = 0; i <= segments; i++)
+  {
+    float angle = glm::two_pi<float>() * i / segments;
+    glm::vec3 dir = sub * cosRho + (t1 * std::cos(angle) + t2 * std::sin(angle)) * sinRho;
+    glm::vec3 pt = dir * surfaceOffset;
+    if (i > 0)
+      gui.drawLine(prev, pt, footprintColor, 1.8f);
+    prev = pt;
+  }
+
+  // Dashed nadir line, surface straight up to the satellite.
+  glm::vec3 surfacePt = sub * surfaceOffset;
+  glm::vec3 satPt = glm::vec3(satPosEci);
+  const int dashSegments = 20;
+  for (int i = 0; i < dashSegments; i += 2) // skip every other -- dashed look
+  {
+    glm::vec3 a = glm::mix(surfacePt, satPt, static_cast<float>(i) / dashSegments);
+    glm::vec3 b = glm::mix(surfacePt, satPt, static_cast<float>(i + 1) / dashSegments);
+    gui.drawLine(a, b, footprintColor * 0.8f, 0.8f);
+  }
+}
+
+// 2D ground-track minimap: the Earth texture as a flat equirectangular
+// background image, the ground-track history as a fading trail, the
+// footprint circle projected onto the same map, and a marker at the
+// current sub-satellite point -- ported from constellation-sim's
+// SatelliteRenderer's "GROUND TRACK" panel (drawMercatorWindow's logic,
+// in their code, ended up inlined into the panel that calls it; same
+// here).
+//
+// UV flip note: VGL's Texture loader flips images vertically on load
+// (stbi_set_flip_vertically_on_load -- see drawEarth's comment on why
+// that mattered for the 3D globe's pole alignment). ImGui::Image's UV0/UV1
+// arguments compensate for the same flip here, the same way
+// constellation-sim's own minimap does -- (0,1)/(1,0) instead of the
+// usual (0,0)/(1,1), so the displayed 2D map still reads north-up.
+static void drawGroundTrackMinimap(const Texture &earthTexture,
+                                   const std::vector<glm::vec2> &groundTrack,
+                                   const glm::dvec3 &satPosEci, double thetaGstRad,
+                                   double minElevationRad)
+{
+  if (!ImGui::BeginChild("##ground_track", ImVec2(0.0f, 220.0f), false, ImGuiWindowFlags_NoScrollbar))
+  {
+    ImGui::EndChild();
+    return;
+  }
+
+  ImVec2 cp = ImGui::GetCursorScreenPos();
+  ImVec2 cs = ImGui::GetContentRegionAvail();
+
+  ImGui::Image(static_cast<ImTextureID>(static_cast<uintptr_t>(earthTexture.id())),
+              cs, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+
+  // Equirectangular projection: lon in [-180,180] -> x in [0, width],
+  // lat in [-90,90] -> y in [0, height] (north at the top).
+  auto toScreen = [&](float latDeg, float lonDeg) -> ImVec2
+  {
+    return ImVec2(cp.x + (lonDeg + 180.0f) / 360.0f * cs.x,
+                 cp.y + (90.0f - latDeg) / 180.0f * cs.y);
+  };
+
+  // Ground-track trail, fading from dim to bright toward the current
+  // position. Segments that cross the +-180 deg seam (a huge apparent
+  // longitude jump) are skipped rather than drawn as a spurious line all
+  // the way across the map.
+  int trailCount = static_cast<int>(groundTrack.size());
+  for (int i = 1; i < trailCount; i++)
+  {
+    float lon0 = groundTrack[i - 1].y, lon1 = groundTrack[i].y;
+    if (std::abs(lon1 - lon0) > 90.0f)
+      continue;
+    float age = static_cast<float>(i) / trailCount;
+    ImU32 col = IM_COL32(static_cast<int>(20 + 20 * age), static_cast<int>(120 + 135 * age), static_cast<int>(220 - 20 * age), 220);
+    dl->AddLine(toScreen(groundTrack[i - 1].x, groundTrack[i - 1].y),
+               toScreen(groundTrack[i].x, groundTrack[i].y), col, 1.5f);
+  }
+
+  // Footprint circle, projected onto the map -- traced the same way the 3D
+  // version does (see drawGroundFootprint), each point converted to
+  // geodetic individually since the small-circle-around-nadir shape isn't
+  // preserved under an equirectangular projection (especially near the
+  // poles).
+  double rho = computeFootprintHalfAngleRad(satPosEci, minElevationRad);
+  if (rho > 0.0)
+  {
+    glm::dvec3 sub = glm::normalize(satPosEci);
+    glm::dvec3 ref = (std::abs(sub.z) > 0.99) ? glm::dvec3(1.0, 0.0, 0.0) : glm::dvec3(0.0, 0.0, 1.0);
+    glm::dvec3 t1 = glm::normalize(glm::cross(sub, ref));
+    glm::dvec3 t2 = glm::cross(sub, t1);
+    double cosRho = std::cos(rho), sinRho = std::sin(rho);
+
+    const int segments = 72;
+    bool hasPrev = false;
+    ImVec2 prevPt{};
+    float prevLon = 0.0f;
+    for (int i = 0; i <= segments; i++)
+    {
+      double angle = glm::two_pi<double>() * i / segments;
+      glm::dvec3 dir = sub * cosRho + (t1 * std::cos(angle) + t2 * std::sin(angle)) * sinRho;
+      OrbitFrames::Geodetic geo = OrbitFrames::eciToGeodeticDeg(dir * OrbitFrames::EARTH_RADIUS_M, thetaGstRad);
+      ImVec2 pt = toScreen(static_cast<float>(geo.latDeg), static_cast<float>(geo.lonDeg));
+      if (hasPrev && std::abs(static_cast<float>(geo.lonDeg) - prevLon) < 90.0f)
+        dl->AddLine(prevPt, pt, IM_COL32(0, 210, 255, 160), 1.2f);
+      prevPt = pt;
+      prevLon = static_cast<float>(geo.lonDeg);
+      hasPrev = true;
+    }
+  }
+
+  OrbitFrames::Geodetic nowGeo = OrbitFrames::eciToGeodeticDeg(satPosEci, thetaGstRad);
+  ImVec2 satPx = toScreen(static_cast<float>(nowGeo.latDeg), static_cast<float>(nowGeo.lonDeg));
+  dl->AddCircleFilled(satPx, 5.5f, IM_COL32(0, 220, 255, 255));
+  dl->AddCircle(satPx, 7.5f, IM_COL32(255, 255, 255, 200), 16, 1.2f);
+
+  char coordBuf[64];
+  std::snprintf(coordBuf, sizeof(coordBuf), "%.2f %s  %.2f %s",
+               std::abs(nowGeo.latDeg), nowGeo.latDeg >= 0 ? "N" : "S",
+               std::abs(nowGeo.lonDeg), nowGeo.lonDeg >= 0 ? "E" : "W");
+  dl->AddText(ImVec2(cp.x + 4.0f, cp.y + cs.y - 16.0f), IM_COL32(220, 220, 220, 220), coordBuf);
+
+  ImGui::EndChild();
+}
+
+// Orbit tab: real orbital elements (from the true propagated state, not
+// the commanded initial condition -- these drift from the initial
+// circular/51.6deg values as J2 acts on the orbit) plus the ground track.
+static void drawOrbitTab(const OrbitState &orbitState, const Texture &earthTexture,
+                         const std::vector<glm::vec2> &groundTrack, double currentJd)
+{
+  double mu = TwoBodyGravity{}.mu;
+  OrbitalElements elements = OrbitalElements::fromState(orbitState, mu);
+
+  double radiusM = glm::length(orbitState.position);
+  double altitudeKm = (radiusM - OrbitFrames::EARTH_RADIUS_M) / 1000.0;
+  double apogeeKm = (elements.semiMajorAxisM * (1.0 + elements.eccentricity) - OrbitFrames::EARTH_RADIUS_M) / 1000.0;
+  double perigeeKm = (elements.semiMajorAxisM * (1.0 - elements.eccentricity) - OrbitFrames::EARTH_RADIUS_M) / 1000.0;
+  double periodMin = elements.periodS(mu) / 60.0;
+  double meanMotionRevDay = elements.meanMotionRadS(mu) * 86400.0 / glm::two_pi<double>();
+
+  ImGui::SeparatorText("Orbital State");
+  ImGui::TextDisabled("From the real propagated state, not the commanded initial condition --");
+  ImGui::TextDisabled("drifts from it as J2 acts on the orbit (see docs/ALGORITHMS.md).");
+  ImGui::Text("Altitude: %.2f km", altitudeKm);
+  ImGui::Text("Apogee / Perigee altitude: %.2f / %.2f km", apogeeKm, perigeeKm);
+  ImGui::Text("Semi-major axis: %.1f km", elements.semiMajorAxisM / 1000.0);
+  ImGui::Text("Eccentricity: %.5f", elements.eccentricity);
+  ImGui::Text("Inclination: %.3f deg", glm::degrees(elements.inclinationRad));
+  ImGui::Text("RAAN: %.3f deg", glm::degrees(elements.raanRad));
+  ImGui::Text("Argument of periapsis: %.3f deg", glm::degrees(elements.argPeriapsisRad));
+  ImGui::Text("True anomaly: %.3f deg", glm::degrees(elements.trueAnomalyRad));
+  ImGui::Text("Period: %.2f min", periodMin);
+  ImGui::Text("Mean motion: %.4f rev/day", meanMotionRevDay);
+
+  ImGui::SeparatorText("Ground Track");
+  double gmst = OrbitFrames::gmstRad(currentJd);
+  drawGroundTrackMinimap(earthTexture, groundTrack, orbitState.position, gmst,
+                         glm::radians(static_cast<double>(Config::FOOTPRINT_MIN_ELEVATION_DEG)));
 }
 
 static const char *modeName(PointingMode m)
@@ -968,10 +1354,10 @@ static void drawFdirTab(ADCS &adcs)
 // perceives (there's no EPS "sensor model" with its own noise/dropouts in
 // this project -- battery telemetry is read directly, see PowerSample's
 // header comment).
-static void drawEpsTab(Cubesat &sat, ADCS &adcs, SensorTelemetry &telemetry)
+static void drawEpsTab(Cubesat &sat, ADCS &adcs, SensorTelemetry &telemetry, bool inEclipse)
 {
   float soc = sat.battery.stateOfCharge();
-  ImVec4 socColor = soc > 0.5f ? ImVec4(0.3f, 1.0f, 0.4f, 1.0f)
+  ImVec4 socColor = soc > 0.5f   ? ImVec4(0.3f, 1.0f, 0.4f, 1.0f)
                     : soc > 0.2f ? ImVec4(1.0f, 0.8f, 0.2f, 1.0f)
                                  : ImVec4(1.0f, 0.3f, 0.2f, 1.0f);
 
@@ -1000,12 +1386,16 @@ static void drawEpsTab(Cubesat &sat, ADCS &adcs, SensorTelemetry &telemetry)
   for (size_t i = 0; i < sat.solarPanels.size(); i++)
   {
     SolarPanel::Reading r = sat.solarPanels[i].sample(*sat.body, sunDirWorld, Config::SOLAR_FLUX_WM2);
-    totalGenW += r.powerW;
+    float panelPowerW = inEclipse ? 0.0f : r.powerW;
+    totalGenW += panelPowerW;
     const char *name = i < 6 ? panelNames[i] : "?";
-    ImGui::Text("%s face: %5.2f W  (incidence %5.1f deg)", name, r.powerW, r.incidenceAngleDeg);
+    ImGui::Text("%s face: %5.2f W  (incidence %5.1f deg)", name, panelPowerW, r.incidenceAngleDeg);
   }
   ImGui::Text("Total generation: %.2f W", totalGenW);
-  ImGui::TextDisabled("No orbital eclipse model -- the sun is always \"up,\" generation only depends on attitude.");
+  if (inEclipse)
+    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.7f, 1.0f), "In eclipse -- Earth's shadow, no generation.");
+  else
+    ImGui::TextDisabled("Sunlit.");
 }
 
 // Simulation-level knobs, as opposed to ADCS/FSW state -- things that
@@ -1015,18 +1405,53 @@ static void drawEpsTab(Cubesat &sat, ADCS &adcs, SensorTelemetry &telemetry)
 struct SimControls
 {
   bool paused = false;
-  bool faultInjectionEnabled = true;
   float tumbleKickRadS;
 
   explicit SimControls(float tumbleKickRadSIn) : tumbleKickRadS(tumbleKickRadSIn) {}
 };
 
-static void drawSimulationTab(SimControls &sim, WheelFaultInjector &faultInjector,
+// Mission epoch (UTC calendar date/time that orbitState.missionTimeS = 0
+// corresponds to), editable live from the Simulation tab -- changing it
+// doesn't touch the orbit itself (orbitState keeps propagating exactly as
+// it was), only what real Julian Date main()'s currentJdNow maps
+// missionTimeS onto, which is what Sun direction (SunModel) and Earth's
+// rotation (OrbitFrames::gmstRad, see drawEarth) are actually computed
+// from -- so this is genuinely "what historical/future date is this
+// orbit happening on," not a simulation reset.
+struct EpochControls
+{
+  int year = 2026;
+  int month = 1;
+  int day = 1;
+  int hour = 0;
+  int minute = 0;
+  float second = 0.0f;
+};
+
+static void drawSimulationTab(SimControls &sim, EpochControls &epoch,
                               std::vector<ReactionWheel *> &wheels, RigidBody *body, ADCS &adcs)
 {
   ImGui::SeparatorText("Simulation");
   ImGui::Checkbox("Pause simulation", &sim.paused);
-  ImGui::TextDisabled("Physics, FSW, and fault injection all freeze; camera/UI stay live.");
+  ImGui::TextDisabled("Physics and FSW freeze; camera/UI stay live.");
+
+  ImGui::SeparatorText("Mission Epoch (UTC)");
+  ImGui::TextDisabled("What real calendar date orbitState's mission clock started at --");
+  ImGui::TextDisabled("Sun direction and Earth's rendered rotation both follow this live.");
+  int ymd[3] = {epoch.year, epoch.month, epoch.day};
+  if (ImGui::InputInt3("Year / Month / Day", ymd))
+  {
+    epoch.year = ymd[0];
+    epoch.month = glm::clamp(ymd[1], 1, 12);
+    epoch.day = glm::clamp(ymd[2], 1, 31);
+  }
+  int hms[2] = {epoch.hour, epoch.minute};
+  if (ImGui::InputInt2("Hour / Minute", hms))
+  {
+    epoch.hour = glm::clamp(hms[0], 0, 23);
+    epoch.minute = glm::clamp(hms[1], 0, 59);
+  }
+  ImGui::DragFloat("Second", &epoch.second, 1.0f, 0.0f, 59.999f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 
   ImGui::SeparatorText("Disturbances");
   ImGui::DragFloat("Tumble kick (rad/s)", &sim.tumbleKickRadS, 0.05f, 0.0f, 5.0f, "%.2f");
@@ -1038,15 +1463,27 @@ static void drawSimulationTab(SimControls &sim, WheelFaultInjector &faultInjecto
   }
 
   ImGui::SeparatorText("Reaction Wheel Faults");
-  ImGui::Checkbox("Enable random fault injection", &sim.faultInjectionEnabled);
-  float mean = faultInjector.meanSecondsBetweenFaults;
-  if (ImGui::DragFloat("Mean seconds between faults", &mean, 1.0f, 1.0f, 300.0f, "%.0f"))
-    faultInjector.setMeanSecondsBetweenFaults(mean);
-  if (ImGui::Button("Trigger fault now [F]"))
-    faultInjector.trigger(wheels);
-  ImGui::SameLine();
+  ImGui::TextDisabled("Manual only -- pick a wheel and a fault, same healthFactor model FDIR reacts to.");
+  static float degradeSeverity = 0.3f; // shared by every "Degrade" button below
+  ImGui::SliderFloat("Degrade severity (healthFactor)", &degradeSeverity, 0.05f, 0.95f, "%.2f");
+  for (size_t i = 0; i < wheels.size(); i++)
+  {
+    ImGui::PushID(static_cast<int>(i));
+    ImGui::Text("Wheel %zu (health %.0f%%)", i, wheels[i]->healthFactor * 100.0f);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Fail"))
+      wheels[i]->healthFactor = 0.0f;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Degrade"))
+      wheels[i]->healthFactor = degradeSeverity;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Repair"))
+      wheels[i]->healthFactor = 1.0f;
+    ImGui::PopID();
+  }
   if (ImGui::Button("Repair all wheels"))
-    faultInjector.repairAll(wheels);
+    for (auto *w : wheels)
+      w->healthFactor = 1.0f;
 
   ImGui::SeparatorText("Momentum Desaturation");
   float maxWheelSat = 0.0f;
@@ -1076,12 +1513,14 @@ static void drawSimulationTab(SimControls &sim, WheelFaultInjector &faultInjecto
 // plus a rolling plot -- what the FSW actually perceives), Actuators
 // (every actuator's current command + health/saturation status, plus the
 // manual-override controls), and Simulation (test-harness controls that
-// aren't part of the spacecraft itself: pause, induced tumbles, and the
-// reaction wheel fault injector).
+// aren't part of the spacecraft itself: pause, mission epoch, induced
+// tumbles, and manual reaction-wheel fault triggers).
 static void drawADCSPanel(ADCS &adcs, Cubesat &sat,
                           SensorTelemetry &telemetry, SimControls &sim,
-                          WheelFaultInjector &faultInjector,
-                          float trueErrDeg)
+                          EpochControls &epoch,
+                          const OrbitState &orbitState, const Texture &earthTexture,
+                          const std::vector<glm::vec2> &groundTrack, double currentJd,
+                          float trueErrDeg, bool inEclipse)
 {
   ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowSize(ImVec2(380, 560), ImGuiCond_FirstUseEver);
@@ -1111,12 +1550,17 @@ static void drawADCSPanel(ADCS &adcs, Cubesat &sat,
     }
     if (ImGui::BeginTabItem("EPS"))
     {
-      drawEpsTab(sat, adcs, telemetry);
+      drawEpsTab(sat, adcs, telemetry, inEclipse);
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Orbit"))
+    {
+      drawOrbitTab(orbitState, earthTexture, groundTrack, currentJd);
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("Simulation"))
     {
-      drawSimulationTab(sim, faultInjector, sat.wheels, sat.body, adcs);
+      drawSimulationTab(sim, epoch, sat.wheels, sat.body, adcs);
       ImGui::EndTabItem();
     }
     ImGui::EndTabBar();
@@ -1130,7 +1574,7 @@ static void updateTitle(GLFWwindow *win, PointingMode mode, float attErrDeg,
 {
   char buf[256];
   std::snprintf(buf, sizeof(buf),
-                "CubeSat ADCS (Pyramid RWA)  |  [1-6] Mode  [Space] Target  [T] Tumble  [F] Fault  |  "
+                "CubeSat ADCS (Pyramid RWA)  |  [1-6] Mode  [Space] Target  [T] Tumble  |  "
                 "Mode: %s  |  Att err: %.1f deg  |  Rate: %.3f rad/s  |  Faulted wheels: %d",
                 modeName(mode), attErrDeg, rateRadS, faultedWheels);
   glfwSetWindowTitle(win, buf);
@@ -1147,6 +1591,18 @@ int main()
       .setUp({0, 0, 1})
       .setClipPlanes(Config::CAMERA_NEAR, Config::CAMERA_FAR)
       .setFOV(Config::CAMERA_FOV);
+  // The scene now spans a 0.1m cubesat up to a ~6.9e6m orbital radius --
+  // a standard depth buffer can't hold that dynamic range without
+  // z-fighting (near:far is on the order of 1e9). Logarithmic depth
+  // trades a small amount of precision at extreme distances for correct
+  // ordering across the whole range.
+  gui.setLogDepth(Config::CAMERA_FAR);
+
+  // Loaded after the GL context is live (Texture::loadFromFile requires
+  // it) -- falls back to a grey 1x1 texture with a printed warning if the
+  // file isn't found, so a missing asset doesn't crash the sim.
+  Texture earthTexture;
+  earthTexture.loadFromFile(std::string(RESOURCES_DIR) + "/textures/earth.jpg");
 
   PhysicsWorld world;
   HardwareConfig hwConfig;
@@ -1176,7 +1632,6 @@ int main()
   ADCS adcs;
   adcs.configure(hwConfig, sat.body->orientation);
   adcs.target = randomTarget();
-  adcs.sunPosition = randomSunPosition();
   float adcsTimer = 0.0f;
   float missionTime = 0.0f;
   float trueErrDeg = 0.0f; // harness-side diagnostic: true (ground-truth) pointing error, held between ADCS cycles like fieldNow below
@@ -1186,20 +1641,50 @@ int main()
   // simulation setup now, not something ADCS itself ever sees or assumes.
   glm::vec3 gravity{0.0f};
 
-  // Ambient magnetic field model (see rigidbody/environment/MagneticField.h)
-  // -- default LEO/ISS-like altitude and inclination. Sampled every frame
-  // below and written into both the magnetorquers (which need it to turn a
-  // commanded dipole moment into torque) and ADCS's ambientFieldWorld
-  // (its TRIAD reference vector, the same category of "known model input"
-  // as target/sunPosition -- see ADCS.h), the same way `gravity` feeds the
-  // IMU sample below.
-  MagneticField magneticField;
+  // Real orbital truth: double-precision ECI state (see rigidbody/orbit/
+  // OrbitState.h), propagated independently of sat.body's own float32
+  // scene-frame position -- this is genuinely a *different* position, not
+  // a rescaled version of it (see FlightTypes.h's spacecraftPositionWorld
+  // comment). Two-body + J2, ISS-like default (500km circular, 51.6deg
+  // inclination) -- the same altitude/inclination the old kinematic
+  // magnetic-field stand-in used, now driving real position, sun
+  // direction, eclipse state, and magnetic field.
+  OrbitState orbitState = OrbitalElements::circular(
+                              500e3, glm::radians(51.6), OrbitFrames::EARTH_RADIUS_M)
+                              .toState(TwoBodyGravity{}.mu);
+  OrbitPropagator orbitPropagator;
+  orbitPropagator.addForceModel(std::make_unique<TwoBodyGravity>());
+  orbitPropagator.addForceModel(std::make_unique<J2Perturbation>());
+  EpochControls epoch; // editable live from the Simulation tab -- see its own comment
+  double missionEpochJd = OrbitTime::julianDate(epoch.year, epoch.month, epoch.day, epoch.hour, epoch.minute, epoch.second);
+
+  // Real tilted-dipole field, sampled at orbitState's true position each
+  // frame (see below) -- replaces the old MagneticField's fake kinematic
+  // orbit phase with the real one. Written into both the magnetorquers
+  // (which need it to turn a commanded dipole moment into torque) and
+  // ADCS's ambientFieldWorld (its TRIAD reference vector), the same way
+  // `gravity` feeds the IMU sample below.
+  CentralBodyMagneticField magField;
 
   SensorTelemetry telemetry(Config::TELEMETRY_HISTORY_SAMPLES);
 
-  WheelFaultInjector faultInjector(Config::MEAN_SECONDS_BETWEEN_FAULTS);
   SimControls sim(Config::TUMBLE_KICK_RAD_S);
-  glm::vec3 fieldNow{0.0f}; // last-sampled ambient field; held while paused rather than resampled
+  glm::vec3 fieldNow{0.0f};                 // last-sampled ambient field; held while paused rather than resampled
+  bool inEclipse = false;                   // last-computed shadow state; held while paused
+  glm::vec3 earthRelativePositionNow{0.0f}; // orbitState.position cast to float; held while paused
+
+  // Predicted orbit path (render-scale points, see computePredictedOrbitPath)
+  // -- computed once up front and refreshed periodically, not every frame.
+  std::vector<glm::vec3> orbitPathPoints = computePredictedOrbitPath(orbitState, Config::ORBIT_PATH_POINTS);
+  float orbitPathRefreshTimer = 0.0f;
+  double currentJdNow = missionEpochJd; // held while paused, and for drawEarth() below
+
+  // Ground track: (lat, lon) history in degrees, sampled periodically (see
+  // Config::GROUND_TRACK_SAMPLE_INTERVAL_S) rather than every frame, capped
+  // at Config::GROUND_TRACK_MAX_POINTS so it spans multiple orbits without
+  // growing unbounded over a long-running mission.
+  std::vector<glm::vec2> groundTrackLatLonDeg;
+  float groundTrackSampleTimer = 0.0f;
 
   float lastTime = glfwGetTime();
   while (!gui.shouldClose())
@@ -1241,8 +1726,13 @@ int main()
       sat.body->angularVelocity = glm::vec3(tumbleDist(tumbleRng), tumbleDist(tumbleRng), tumbleDist(tumbleRng));
     }
 
-    if (gui.isKeyJustPressed(GLFW_KEY_F))
-      faultInjector.trigger(sat.wheels);
+    // Follow the satellite: recenter the orbit camera's target on its
+    // real current position every frame (like constellation-sim does for
+    // a selected satellite), so free yaw/pitch/zoom around it still work
+    // (setTarget doesn't touch distance/yaw/pitch) while any right-drag
+    // pan gets overridden next frame -- a locked-on chase camera can't
+    // also be panned away from what it's locked onto.
+    orbit.setTarget(sat.body->position);
 
     // Don't drive the orbit camera from mouse input ImGui itself wants
     // (e.g. dragging the Controller window around) -- otherwise moving a
@@ -1259,12 +1749,72 @@ int main()
     {
       missionTime += dt;
 
-      // Ambient field at the current simulated time -- fed to the
-      // magnetorquers (they need it every physics substep to turn a
+      // Real orbital truth, propagated every frame at the frame's own dt
+      // (RK4 is stable at any step size -- smaller just means more calls,
+      // not less accuracy) -- integrated independently of
+      // PhysicsWorld::step() below in double precision, then bridged into
+      // sat.body->position as a single non-accumulating cast every frame
+      // (see OrbitState.h's header comment for why the double-precision
+      // integration itself has to stay separate from RigidBody's float32
+      // state, even though the *result* is copied into it here). Because
+      // this is a fresh cast from the true state each frame rather than
+      // something PhysicsWorld itself integrates, there's no float32
+      // accumulation risk -- sat.body->velocity is deliberately never set
+      // to match, so PhysicsWorld's own (float32) translational
+      // integration contributes nothing on top of this.
+      orbitPropagator.step(orbitState, dt);
+      // Recomputed from the Simulation tab's live-editable fields every
+      // frame -- cheap (six ints/one float into a JD formula), and means
+      // an edit takes effect immediately without a separate "apply" step.
+      missionEpochJd = OrbitTime::julianDate(epoch.year, epoch.month, epoch.day, epoch.hour, epoch.minute, epoch.second);
+      currentJdNow = OrbitTime::advance(missionEpochJd, orbitState.missionTimeS);
+      earthRelativePositionNow = glm::vec3(orbitState.position); // single non-accumulating cast -- see OrbitState.h
+      sat.body->position = earthRelativePositionNow;
+      glm::dvec3 sunDirEci = SunModel::directionEci(currentJdNow);
+      inEclipse = EclipseModel::inEclipse(orbitState.position, sunDirEci);
+
+      // Refresh the predicted-path polyline periodically (not every
+      // frame -- see ORBIT_PATH_REFRESH_S) since it only drifts slowly
+      // (mainly from J2) cycle to cycle.
+      orbitPathRefreshTimer += dt;
+      if (orbitPathRefreshTimer > Config::ORBIT_PATH_REFRESH_S)
+      {
+        orbitPathPoints = computePredictedOrbitPath(orbitState, Config::ORBIT_PATH_POINTS);
+        orbitPathRefreshTimer = 0.0f;
+      }
+
+      // Sample the ground track periodically (not every frame -- see
+      // GROUND_TRACK_SAMPLE_INTERVAL_S).
+      groundTrackSampleTimer += dt;
+      if (groundTrackSampleTimer > Config::GROUND_TRACK_SAMPLE_INTERVAL_S)
+      {
+        OrbitFrames::Geodetic geo = OrbitFrames::eciToGeodeticDeg(orbitState.position, OrbitFrames::gmstRad(currentJdNow));
+        groundTrackLatLonDeg.push_back(glm::vec2(static_cast<float>(geo.latDeg), static_cast<float>(geo.lonDeg)));
+        if (static_cast<int>(groundTrackLatLonDeg.size()) > Config::GROUND_TRACK_MAX_POINTS)
+          groundTrackLatLonDeg.erase(groundTrackLatLonDeg.begin());
+        groundTrackSampleTimer = 0.0f;
+      }
+
+      // Sun position for guidance/EPS: the real ECI position (~1.5e11 m),
+      // not an arbitrary nearby offset -- now that sat.body->position is
+      // real too (~6.9e6 m), placing the sun a small fixed distance away
+      // (the old "2 units from the satellite" convention) would suffer
+      // the same catastrophic-cancellation problem randomTarget()'s
+      // comment describes: adding a small offset to spacecraftPositionWorld
+      // and then subtracting it back out to recover a direction loses
+      // almost all of that offset's precision once the base position's
+      // magnitude dwarfs it. The real Sun position doesn't have this
+      // problem -- it's the *dominant* term in sunPosition -
+      // spacecraftPositionWorld, not a small perturbation of it, so the
+      // subtraction stays well-conditioned.
+      adcs.sunPosition = glm::vec3(SunModel::positionEci(currentJdNow));
+
+      // Ambient field at the satellite's real orbital position -- fed to
+      // the magnetorquers (they need it every physics substep to turn a
       // commanded dipole moment into torque) and to ADCS (it needs it to
       // interpret the magnetometer), same role adcs.gravity plays for the
       // IMU.
-      fieldNow = magneticField.sample(missionTime);
+      fieldNow = magField.sample(earthRelativePositionNow);
       for (auto *rod : sat.magnetorquers)
         rod->ambientFieldWorld = fieldNow;
       adcs.ambientFieldWorld = fieldNow;
@@ -1299,7 +1849,7 @@ int main()
         inputs.power = {sat.battery.stateOfCharge(), sat.battery.voltage()};
         for (int i = 0; i < NUM_WHEELS; i++)
           inputs.wheelTelemetry[i] = {sat.wheels[i]->currentSpeed, sat.wheels[i]->healthFactor > 0.01f};
-        inputs.spacecraftPositionWorld = sat.body->position; // stands in for a real nav solution (no GPS/ephemeris modeled)
+        inputs.spacecraftPositionWorld = sat.body->position; // real orbital position (ECI meters) -- stands in for a real nav solution
 
         FSWOutputs out = adcs.step(inputs, adcsTimer);
 
@@ -1311,13 +1861,17 @@ int main()
         // =================== EPS (same 20 Hz cycle) ===================
         // Generation: sum every panel's cosine-law output against the same
         // sun direction the star tracker/sun sensor were just sampled
-        // against. Consumption: a fixed housekeeping/sensor draw plus each
-        // actuator's idle-plus-effort power for the commands just issued
-        // above -- see the Config::POWER_* comments for the model each
-        // term follows. Net power integrates straight into the battery.
+        // against -- zero while the real orbital position is in Earth's
+        // shadow (see EclipseModel::inEclipse above), closing this
+        // project's former "no orbital eclipse model" gap. Consumption: a
+        // fixed housekeeping/sensor draw plus each actuator's
+        // idle-plus-effort power for the commands just issued above -- see
+        // the Config::POWER_* comments for the model each term follows.
+        // Net power integrates straight into the battery.
         float genW = 0.0f;
-        for (const SolarPanel &panel : sat.solarPanels)
-          genW += panel.sample(*sat.body, sunDirWorld, Config::SOLAR_FLUX_WM2).powerW;
+        if (!inEclipse)
+          for (const SolarPanel &panel : sat.solarPanels)
+            genW += panel.sample(*sat.body, sunDirWorld, Config::SOLAR_FLUX_WM2).powerW;
 
         float drawW = Config::POWER_OBC_BASELINE_W + Config::POWER_IMU_W +
                       Config::POWER_MAGNETOMETER_W + Config::POWER_STAR_TRACKER_W +
@@ -1353,9 +1907,6 @@ int main()
         telemetry.batterySocPct.push(sat.battery.stateOfCharge() * 100.0f);
       }
 
-      if (sim.faultInjectionEnabled)
-        faultInjector.update(dt, sat.wheels);
-
       // =================== PHYSICS ===================
       world.step(dt);
     }
@@ -1363,7 +1914,18 @@ int main()
     // =================== DRAW ===================
     gui.beginFrame();
     imguiLayer.beginFrame();
-    drawSatelliteCoordinateBox(gui, sat.body->position, Config::GRID_HALF_SIZE, Config::GRID_STEP);
+
+    // =================== ORBIT VISUALIZATION ===================
+    // Earth and the predicted orbit path, both in real ECI meters --
+    // PhysicsWorld's own frame here *is* ECI (Earth's center at the world
+    // origin, sat.body->position bridged from orbitState every frame
+    // below), so the satellite's own wireframe/wheels/rods/etc. (drawn
+    // further down, already reading sat.body->position/orientation) are
+    // already at the right place -- no separate marker needed.
+    drawEarth(gui, earthTexture, currentJdNow);
+    drawOrbitPath(gui, orbitPathPoints);
+    drawGroundFootprint(gui, orbitState.position, glm::radians(Config::FOOTPRINT_MIN_ELEVATION_DEG));
+
     drawSatelliteWireframe(gui, sat.body);
     drawReactionWheels(gui, sat.wheels, sat.body);
     drawMagnetorquers(gui, sat.magnetorquers, sat.body);
@@ -1372,7 +1934,7 @@ int main()
     drawMirror(gui, sat.body);
     drawSunReflection(gui, sat.body, adcs.sunPosition);
 
-    gui.drawSphere(adcs.target, 0.05f, {0, 1.0f, 0});
+    gui.drawSphere(adcs.target, Config::TARGET_MARKER_RADIUS_M, {0, 1.0f, 0});
 
     // Sun marker sized to its *real* angular diameter (~32 arcmin) at its
     // current (arbitrary, scaled-for-visibility) distance from the
@@ -1389,7 +1951,9 @@ int main()
     gui.drawLine(sat.body->position, adcs.target, {0, 1.0f, 0});
     gui.drawLine(sat.body->position, adcs.sunPosition, {1.0f, 0.9f, 0.1f});
 
-    drawADCSPanel(adcs, sat, telemetry, sim, faultInjector, trueErrDeg);
+    drawWorldAxesGizmo(gui);
+
+    drawADCSPanel(adcs, sat, telemetry, sim, epoch, orbitState, earthTexture, groundTrackLatLonDeg, currentJdNow, trueErrDeg, inEclipse);
 
     imguiLayer.endFrame();
     gui.endFrame();

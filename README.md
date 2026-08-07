@@ -2,9 +2,9 @@
 
 A closed-loop cubesat ADCS (attitude determination and control system) / flight-software simulation: a single high-fidelity satellite, its sensors, its actuators, and the flight software driving them, all running against a real 6-DOF rigid-body physics engine.
 
-**Scope.** This project answers single-vehicle GNC/flight-software questions — attitude estimation and control, actuator allocation and fault handling, momentum management — for one satellite at a time. It deliberately does not do orbit-level mission design (constellation architecture, coverage, station-keeping, conjunction screening); that's a different fidelity/scale problem (one high-fidelity vehicle vs. thousands of low-fidelity trajectories) solved by a separate project, [constellation-sim](https://github.com/vcampos4545/constellation-sim). The two are meant to hand off data (an orbital state / sun vector) rather than share an engine.
+**Scope.** This project answers single-vehicle GNC/flight-software questions — attitude estimation and control, actuator allocation and fault handling, momentum management, and (now) real single-satellite orbital dynamics — for one satellite at a time. The scale boundary is the point, not whether orbital motion exists at all: it deliberately does not do orbit-*level mission design* (constellation architecture, coverage across many satellites, station-keeping maneuver planning, conjunction screening); that's a different fidelity/scale problem (one high-fidelity vehicle vs. thousands of low-fidelity trajectories) solved by a separate project, [constellation-sim](https://github.com/vcampos4545/constellation-sim).
 
-This project itself builds on [spacecraft-dynamics-sim](https://github.com/vcampos4545/spacecraft-dynamics-sim), a generic rigid-body physics engine (bodies, constraints, actuators, sensors) with no spacecraft- or flight-software-specific code in it — fetched as a dependency, not vendored.
+This project itself builds on [spacecraft-dynamics-sim](https://github.com/vcampos4545/spacecraft-dynamics-sim), a generic rigid-body physics engine (bodies, constraints, actuators, sensors, and — since this project needed real orbital dynamics — a double-precision `rigidbody/orbit/` module) with no spacecraft- or flight-software-specific code in it — fetched as a dependency, not vendored. See `docs/ALGORITHMS.md`'s "Orbital Mechanics" section for how this project uses it.
 
 ## What's simulated
 
@@ -16,7 +16,7 @@ This project itself builds on [spacecraft-dynamics-sim](https://github.com/vcamp
 - Three attitude controllers (PID, LQR, cascaded P/rate) selectable live, each auto-tuned from the vehicle's actual inertia and a settling-time/damping-ratio target.
 - B-dot magnetic detumbling for post-deployment tumble recovery.
 - Cross-product-law momentum desaturation, running automatically in the background (not a mode) whenever wheel saturation gets close, with headroom-aware gain scaling so the desaturation maneuver itself can't destabilize pointing.
-- Randomly-occurring wheel faults (degraded or dead) the allocator has to route around.
+- Manually-triggered wheel faults (degraded or dead, per wheel, from the Simulation tab) the allocator has to route around.
 
 **EPS (electrical power subsystem)**: a body-mounted solar panel on each of the 6 faces (standard cubesat layout — whichever face happens to be sunward generates, no gimbal), each following the standard cosine law against the current sun direction and attitude, feeding a Coulomb-counting battery model. Every actuator/sensor draws a representative, physically-motivated amount of power each FSW cycle (wheels/magnetorquers scale with commanded effort, not a flat number) and is debited against the battery alongside whatever the panels generated that cycle — the battery's state of charge is a real consequence of what the spacecraft is doing, not a cosmetic number.
 
@@ -48,7 +48,6 @@ Fetches `rigidbody` (spacecraft-dynamics-sim), VGL, and Dear ImGui from GitHub �
 | `1`-`7` | Pointing mode: Nadir / Sun / Detumble / Target / Slew / Fine / Reflect |
 | `Space` | New random target (Target/Slew/Fine/Reflect modes) |
 | `T` | Kick the body into a random tumble (to test Detumble) |
-| `F` | Force a wheel fault immediately (faults also occur on their own) |
 | Left-drag | Orbit camera |
 | Scroll | Zoom |
 
