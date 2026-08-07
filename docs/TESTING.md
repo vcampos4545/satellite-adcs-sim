@@ -69,14 +69,14 @@ run unattended.
 
 ## Zero-allocation check
 
-FSW code (`src/ADCS.h/.cpp`, `src/FDIR.h/.cpp`) must never dynamically
+FSW code (`src/fsw/ADCS.h/.cpp`, `src/fsw/FDIR.h/.cpp`) must never dynamically
 allocate or hold an RNG — see `docs/ALGORITHMS.md`'s hardware-abstraction
 note and `FlightTypes.h`'s own comment on why (fixed-size arrays, no heap
 allocation after init, matching real embedded/flight coding standards).
 Confirm after any change to those files:
 
 ```bash
-grep -n "std::vector\|push_back\|resize\|<random>" src/ADCS.h src/ADCS.cpp src/FDIR.h src/FDIR.cpp
+grep -n "std::vector\|push_back\|resize\|<random>" src/fsw/ADCS.h src/fsw/ADCS.cpp src/fsw/FDIR.h src/fsw/FDIR.cpp
 ```
 
 Expect no output (grep exit code 1). This isn't automated into `ctest`

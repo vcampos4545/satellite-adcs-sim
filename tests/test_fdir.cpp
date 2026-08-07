@@ -1,5 +1,5 @@
 // Regression tests for FDIR's fault detection and mode-override behavior
-// (src/FDIR.h/.cpp) -- see docs/ALGORITHMS.md "FDIR / Mode Manager" for the
+// (src/fsw/FDIR.h/.cpp) -- see docs/ALGORITHMS.md "FDIR / Mode Manager" for the
 // fault model these are checking.
 #include "test_common.h"
 #include "ADCS.h"

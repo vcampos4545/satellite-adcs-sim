@@ -33,7 +33,7 @@ FetchContent_MakeAvailable(vgl)
 
 # Dear ImGui -- telemetry/control panels. Fetched/built here directly
 # (not by VGL, which stays generic and has no ImGui dependency) -- see
-# src/ImGuiLayer.h for the RAII wrapper that brackets VGL's own
+# src/core/ImGuiLayer.h for the RAII wrapper that brackets VGL's own
 # frame calls with it.
 #
 # find_package(glfw3) was already called above, but FetchContent_
@@ -75,11 +75,16 @@ target_link_libraries(imgui PUBLIC glfw)
 # comments; only glm, for plain vector/quaternion math).
 # ---------------------------------------------------------------------------
 add_library(fsw STATIC
-  src/ADCS.cpp
-  src/Controllers.cpp
-  src/FDIR.cpp
+  src/fsw/ADCS.cpp
+  src/fsw/Controllers.cpp
+  src/fsw/FDIR.cpp
 )
-target_include_directories(fsw PUBLIC src)
+# PUBLIC include dir is src/fsw itself (not all of src) -- fsw's public
+# interface is only its own headers, matching the comment above ("tests/
+# can link exactly this and nothing else"): a consumer of libfsw (tests/,
+# satellite-adcs-sim) sees ADCS.h/FDIR.h/Controllers.h/FlightTypes.h as
+# unprefixed includes, not the rest of this project's source tree.
+target_include_directories(fsw PUBLIC src/fsw)
 target_link_libraries(fsw PUBLIC glm::glm)
 
 # ---------------------------------------------------------------------------
@@ -90,8 +95,26 @@ target_link_libraries(fsw PUBLIC glm::glm)
 # (orbit-level mission design).
 # ---------------------------------------------------------------------------
 add_executable(satellite-adcs-sim
-  src/satellite_adcs_sim.cpp
+  src/core/satellite_adcs_sim.cpp
+  src/core/Cubesat.cpp
+  src/rendering/SatelliteRenderer.cpp
+  src/rendering/MagneticFieldRenderer.cpp
+  src/rendering/OrbitRenderer.cpp
+  src/rendering/WorldAxesGizmo.cpp
+  src/panels/FswPanel.cpp
+  src/panels/SensorsPanel.cpp
+  src/panels/ActuatorsPanel.cpp
+  src/panels/FdirPanel.cpp
+  src/panels/EpsPanel.cpp
+  src/panels/OrbitPanel.cpp
+  src/panels/SimulationPanel.cpp
+  src/panels/VisualizationPanel.cpp
+  src/panels/ADCSPanel.cpp
 )
+# PRIVATE src (the root, not a specific subfolder) -- executable-only code
+# reaches across the core/fsw/rendering/panels split via folder-qualified
+# includes (e.g. "fsw/ADCS.h", "rendering/OrbitRenderer.h"), unlike fsw's
+# own narrower PUBLIC include dir above.
 target_include_directories(satellite-adcs-sim PRIVATE src)
 target_link_libraries(satellite-adcs-sim PRIVATE fsw rigidbody vgl imgui)
 

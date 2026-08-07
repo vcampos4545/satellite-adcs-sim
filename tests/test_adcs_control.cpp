@@ -1,5 +1,5 @@
-// Regression tests for ADCS's core control/estimation loop (src/ADCS.h/.cpp,
-// src/Controllers.h/.cpp) -- see docs/ALGORITHMS.md for the EKF, TRIAD,
+// Regression tests for ADCS's core control/estimation loop (src/fsw/ADCS.h/.cpp,
+// src/fsw/Controllers.h/.cpp) -- see docs/ALGORITHMS.md for the EKF, TRIAD,
 // B-dot, and desaturation equations these are checking against. These are
 // behavior-preservation tests: if a refactor changes the numbers here
 // without an equally-updated doc explaining why, that's a signal something

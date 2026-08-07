@@ -46,7 +46,7 @@ them, not something FSW code depends on or could tell from the inside.
 
 `ADCS`/`FDIR` (the flight software) never reference `RigidBody`,
 `PhysicsWorld`, or any sensor/actuator simulation type — see
-`src/FlightTypes.h`. `ADCS::step()` is a pure function of `(internal state,
+`src/fsw/FlightTypes.h`. `ADCS::step()` is a pure function of `(internal state,
 FSWInputs, dt) -> FSWOutputs`. This is the seam a HIL rig or real flight
 hardware would eventually replace one side of, and it's why `tests/`
 can build FSW logic against nothing but `glm` (see `tests/CMakeLists.txt`).
@@ -527,7 +527,7 @@ desaturating meaningfully faster than 1x.
 
 `FDIR::evaluate()` runs every `step()` cycle, after the EKF correct step
 (so it has a fresh `attitudeUncertaintyDeg`) and before guidance/control
-(so its output can override what they compute against). See `src/FDIR.h`.
+(so its output can override what they compute against). See `src/fsw/FDIR.h`.
 
 **Detected conditions** (bitmask, more than one can be active):
 

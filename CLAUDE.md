@@ -27,9 +27,9 @@ about whether orbital motion exists; that multi-satellite scale problem is
 job, at a different fidelity. See `README.md`'s "Scope" section for the
 full boundary.
 
-`ADCS`/`FDIR` (`src/ADCS.*`, `src/FDIR.*`) are **hardware-abstracted**:
+`ADCS`/`FDIR` (`src/fsw/ADCS.*`, `src/fsw/FDIR.*`) are **hardware-abstracted**:
 they never reference `RigidBody`, `PhysicsWorld`, or any simulation
-sensor/actuator type — only the plain-data contract in `src/FlightTypes.h`.
+sensor/actuator type — only the plain-data contract in `src/fsw/FlightTypes.h`.
 `ADCS::step()` is a pure function of `(internal state, FSWInputs, dt) ->
 FSWOutputs`, and never dynamically allocates or holds an RNG. This is
 deliberate: the same code should be able to run against this simulation,
@@ -61,7 +61,7 @@ full detail on each step):
 3. **Verify — build and test/debug.** Build; if the engine
    (`spacecraft-dynamics-sim`) changed, force a fresh `FetchContent` fetch
    (`rm -rf build`). Run the zero-allocation grep check on any
-   `src/ADCS.*`/`src/FDIR.*` change. Run `ctest`. A throwaway headless
+   `src/fsw/ADCS.*`/`src/fsw/FDIR.*` change. Run `ctest`. A throwaway headless
    scratch program is the right *first* verification step while
    iterating — but don't stop there (see step 4).
 4. **Add to the test suite.** Every feature that changes FSW behavior
@@ -97,7 +97,7 @@ not optional follow-up.
   to `docs/ALGORITHMS.md`'s standing reference — comments explain why a
   specific line does what it does; the doc is where the equations live
   independent of implementation.
-- No dynamic allocation or RNG in FSW code (`src/ADCS.*`, `src/FDIR.*`):
+- No dynamic allocation or RNG in FSW code (`src/fsw/ADCS.*`, `src/fsw/FDIR.*`):
   fixed-size `std::array`s sized by compile-time constants in
   `FlightTypes.h`, matching real embedded/flight coding standards.
 - Follow the repository's existing C++17 standard, RAII, avoid raw owning
