@@ -22,10 +22,13 @@
 // panel's Detumble Actuator selector.
 //
 // Controls:
-//   [1-7]   pointing mode: Nadir / Sun / Detumble / Target / Slew / Fine / Reflect
-//   [Space] new random target (for Target/Slew/Fine/Reflect modes)
-//   [T]     kick the body into a random tumble (to test Detumble)
-//   [F]     force a wheel fault immediately (faults also occur on their own)
+//   [1-7] pointing mode: Nadir / Sun / Detumble / Target / Slew / Fine / Reflect
+//   [T]   kick the body into a random tumble (to test Detumble)
+//
+// Target/Slew/Fine/Reflect modes aim at adcs.target, which auto-tracks
+// the closest ground station (GroundStations.h) currently meeting the
+// footprint's minimum-elevation requirement -- no manual target selection
+// needed; wheel faults are manual-only, via the Simulation tab.
 // ---------------------------------------------------------------------------
 struct Cubesat
 {

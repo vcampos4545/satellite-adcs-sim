@@ -1,6 +1,7 @@
 #pragma once
 #include <vgl/vgl.h>
 #include <rigidbody/orbit/OrbitState.h>
+#include "core/GroundStations.h"
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -14,8 +15,15 @@
 
 // Earth: a textured sphere at the world origin, at its real radius.
 //
-// Two rotations, composed in order:
-//  1. Pole alignment: VGL's sphere mesh (MeshGen::sphere) maps its UV v=0
+// Three rotations, composed in order (see drawEarth's own .cpp comment
+// for the full derivation of each):
+//  1. Meridian correction: a 180 deg rotation about the mesh's own local
+//     pole axis, fixing a longitude-only mismatch between VGL's sphere
+//     mesh's U=0 seam and the standard equirectangular texture convention
+//     (U=0.5 = Greenwich, not U=0) -- without it, ground-station markers
+//     (correctly positioned in ECI) rendered ~180 deg away from their
+//     real continents.
+//  2. Pole alignment: VGL's sphere mesh (MeshGen::sphere) maps its UV v=0
 //     (mesh ring index 0) to the mesh's local +Y -- but VGL's Texture
 //     loader calls stbi_set_flip_vertically_on_load(true) (see
 //     VGL/src/Texture.cpp), so the pixel row that ends up at v=0 is the
@@ -32,13 +40,14 @@
 //     put the correct polar axis in place but with North and South
 //     swapped, which is exactly the "sideways, then upside-down" order
 //     these two bugs actually showed up in.)
-//  2. Spin: +Z is now the correct polar axis, so rotating about it by the
+//  3. Spin: +Z is now the correct polar axis, so rotating about it by the
 //     current Greenwich sidereal angle is the real ECEF->ECI rotation
 //     (same convention orbitState/OrbitFrames.h use) -- this is what
 //     actually makes Earth visibly rotate over time.
-// Composed as spin * poleAlignment (apply pole alignment first, then
-// spin about the now-correct axis -- quaternion composition applies the
-// right-hand operand first).
+// Composed as spin * poleAlignment * meridianCorrection (apply the
+// meridian correction first, then pole alignment, then spin about the
+// now-correct axis -- quaternion composition applies the right-hand
+// operand first).
 void drawEarth(GUI &gui, const Texture &earthTexture, double currentJd);
 
 // Predicted orbit path: propagates a *copy* of the current orbital state
@@ -100,3 +109,14 @@ void drawGroundTrackMinimap(const Texture &earthTexture,
                             const std::vector<glm::vec2> &groundTrack,
                             const glm::dvec3 &satPosEci, double thetaGstRad,
                             double minElevationRad);
+
+// Ground station markers: a small sphere at each GROUND_STATIONS entry's
+// real, currently-rotated ECI position (groundStationPositionEci --
+// recomputed every call from the live Greenwich sidereal angle, so the
+// markers visibly sweep with Earth's rotation rather than sitting fixed
+// in the inertial frame). Drawn in a neutral color distinct from the
+// green target/line pair (drawn separately by the caller for whichever
+// station is currently selected as adcs.target) -- the selected one reads
+// as "the green-highlighted station among the white ones," not a
+// separately-styled marker of its own.
+void drawGroundStations(GUI &gui, double thetaGstRad);

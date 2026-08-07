@@ -243,5 +243,36 @@ int main()
           finalMaxSat, maxErrDeg);
   }
 
+  // TRIAD fallback must refuse when the sun reference isn't actually
+  // available (e.g. the harness gates SunSensor::Reading.valid to false
+  // during eclipse -- see satellite_adcs_sim.cpp's own comment on this,
+  // since SunSensor itself has no eclipse model). computeTriadFallback
+  // requires in.sunSensor.valid; with the star tracker also down (the
+  // scenario TRIAD fallback exists for in the first place), ADCS must not
+  // silently claim a TRIAD correction it can't actually perform.
+  {
+    ADCS adcs;
+    HardwareConfig hw = makeTestHardwareConfig();
+    adcs.configure(hw, glm::quat(1, 0, 0, 0));
+    adcs.mode = PointingMode::TARGET;
+    adcs.target = glm::vec3(1.0f, 0.0f, 0.0f);
+    adcs.ambientFieldWorld = glm::vec3(0, 0, 3e-5f);
+
+    FSWInputs in;
+    in.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
+    in.mag = {glm::vec3(0, 0, 3e-5f), true};
+    in.star = {glm::quat(1, 0, 0, 0), false};    // star tracker down
+    in.sunSensor = {glm::vec3(0, 1, 0), false};  // sun reference unavailable (eclipse)
+    in.power = {1.0f, 8.4f};
+    in.spacecraftPositionWorld = glm::vec3(0.0f);
+    for (int w = 0; w < NUM_WHEELS; w++)
+      in.wheelTelemetry[w] = {0.0f, true};
+
+    adcs.step(in, 0.05f);
+
+    CHECK(!adcs.triadFallbackUsed,
+          "TRIAD fallback must not fire with an invalid sun sensor reading (eclipse), even with the star tracker also down");
+  }
+
   TEST_MAIN_END();
 }

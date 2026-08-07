@@ -5,6 +5,7 @@
 #include "FdirPanel.h"
 #include "EpsPanel.h"
 #include "OrbitPanel.h"
+#include "GroundStationsPanel.h"
 #include "VisualizationPanel.h"
 #include <imgui.h>
 
@@ -13,6 +14,7 @@ void drawADCSPanel(ADCS &adcs, Cubesat &sat,
                    EpochControls &epoch, VisualizationSettings &vis,
                    const OrbitState &orbitState, const Texture &earthTexture,
                    const std::vector<glm::vec2> &groundTrack, double currentJd,
+                   const std::vector<GroundStationPass> &groundStationPasses, int &selectedPassIndex,
                    float trueErrDeg, bool inEclipse)
 {
   ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
@@ -49,6 +51,11 @@ void drawADCSPanel(ADCS &adcs, Cubesat &sat,
     if (ImGui::BeginTabItem("Orbit"))
     {
       drawOrbitTab(orbitState, earthTexture, groundTrack, currentJd);
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Ground Stations"))
+    {
+      drawGroundStationsTab(groundStationPasses, selectedPassIndex);
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("Simulation"))

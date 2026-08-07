@@ -18,3 +18,17 @@ add_test(NAME fdir COMMAND test_fdir)
 add_executable(test_eps test_eps.cpp)
 target_link_libraries(test_eps PRIVATE fsw rigidbody)
 add_test(NAME eps COMMAND test_eps)
+
+# GroundStations.cpp lives in the main src tree (src/core/), not fsw --
+# it's harness-level data/logic (see its own header comment on why: no
+# real need for a data-file loader over a handful of entries), so it's
+# compiled directly into this test rather than linked from a library
+# target, the same way any other src/core/*.cpp file would be if it ever
+# needed its own persistent test.
+add_executable(test_ground_stations test_ground_stations.cpp ../src/core/GroundStations.cpp)
+target_include_directories(test_ground_stations PRIVATE ../src/core)
+# fsw is linked only for test_common.h's own "FlightTypes.h" include (its
+# shared CHECK() macro lives alongside the FSW tests above) -- this test
+# doesn't otherwise touch FSW at all.
+target_link_libraries(test_ground_stations PRIVATE rigidbody fsw)
+add_test(NAME ground_stations COMMAND test_ground_stations)

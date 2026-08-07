@@ -15,10 +15,30 @@
 
 void drawEarth(GUI &gui, const Texture &earthTexture, double currentJd)
 {
+  // Meridian correction: VGL's sphere mesh (MeshGen::sphere) parameterizes
+  // its U coordinate as theta/(2*pi) around the mesh's local +Y (its own
+  // "pole" axis before poleAlignment below), with U=0 at mesh local +X
+  // (theta=0). Composed with poleAlignment+spin as they were (with no
+  // correction), mesh local +X lands on world +X -- which, at GMST=0, is
+  // exactly ECI +X, i.e. lon=0 (Greenwich). But for a standard
+  // equirectangular texture (the same layout the ground-track minimap's
+  // own `x = (lonDeg+180)/360*width` assumes: left edge = lon -180,
+  // *center* = lon 0), U=0 is the *left edge* of the image, not its
+  // center -- so without this correction the mesh renders the texture's
+  // -180 deg column at the location that should show Greenwich, a
+  // constant 180 deg meridian offset (this is what put ground station
+  // markers, correctly positioned in ECI, over the wrong continents:
+  // US stations rendered near India/China/Russia, ~180 deg away). A 180
+  // deg rotation about the mesh's own local pole axis, applied before
+  // poleAlignment, swaps which mesh vertex sits at U=0 vs. U=0.5 without
+  // touching latitude (it's a rotation about the polar axis) or
+  // reintroducing the earlier north/south pole bug (poleAlignment/spin
+  // are unchanged).
+  glm::quat meridianCorrection = glm::angleAxis(glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f));
   glm::quat poleAlignment = glm::angleAxis(glm::radians(-90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
   float gmst = static_cast<float>(OrbitFrames::gmstRad(currentJd));
   glm::quat spin = glm::angleAxis(gmst, glm::vec3(0.0f, 0.0f, 1.0f));
-  glm::quat earthRotation = spin * poleAlignment;
+  glm::quat earthRotation = spin * poleAlignment * meridianCorrection;
   gui.drawTexturedSphere(glm::vec3(0.0f), static_cast<float>(OrbitFrames::EARTH_RADIUS_M), earthRotation, earthTexture);
 }
 
@@ -114,6 +134,18 @@ void drawGroundFootprint(GUI &gui, const glm::dvec3 &satPosEci, double minElevat
     glm::vec3 a = glm::mix(surfacePt, satPt, static_cast<float>(i) / dashSegments);
     glm::vec3 b = glm::mix(surfacePt, satPt, static_cast<float>(i + 1) / dashSegments);
     gui.drawLine(a, b, footprintColor * 0.8f, 0.8f);
+  }
+}
+
+void drawGroundStations(GUI &gui, double thetaGstRad)
+{
+  constexpr float markerRadiusM = 3.5e4f; // smaller than TARGET_MARKER_RADIUS_M so the selected/green one still reads as primary
+  const glm::vec3 stationColor{0.85f, 0.85f, 0.9f};
+
+  for (const GroundStation &station : GROUND_STATIONS)
+  {
+    glm::vec3 posEci = glm::vec3(groundStationPositionEci(station, thetaGstRad));
+    gui.drawSphere(posEci, markerRadiusM, stationColor);
   }
 }
 

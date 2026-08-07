@@ -8,6 +8,7 @@ void drawVisualizationTab(VisualizationSettings &vis)
   ImGui::Checkbox("Earth", &vis.showEarth);
   ImGui::Checkbox("Orbit path (predicted)", &vis.showOrbitPath);
   ImGui::Checkbox("Ground footprint", &vis.showGroundFootprint);
+  ImGui::Checkbox("Ground stations", &vis.showGroundStations);
   ImGui::Checkbox("Satellite (wireframe/wheels/torquers/mirror)", &vis.showSatellite);
   ImGui::Checkbox("Magnetic field (local vector + traced dipole lines)", &vis.showMagneticField);
   ImGui::TextDisabled("Off by default -- the traced field lines are the densest element in the scene.");

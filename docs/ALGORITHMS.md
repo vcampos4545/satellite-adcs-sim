@@ -213,8 +213,8 @@ position — not
 body.orientation * mountOffset` internally, in float32, before the
 harness ever sees the result). Scaling after that internal addition
 can't recover precision already lost to the same catastrophic-
-cancellation pattern described above for `adcs.sunPosition`/
-`randomTarget()` — the general fix is always to scale the small offset
+cancellation pattern described above for `adcs.sunPosition`/ground-station
+targeting (below) — the general fix is always to scale the small offset
 up to a normal-sized number *first*, then add it to the large base value,
 never the reverse.
 
@@ -233,9 +233,11 @@ ground-footprint circle (satellite_adcs_sim.cpp's `drawGroundTrackMinimap`/
 `SatelliteRenderer`) both derive from this same real state — the
 footprint's coverage half-angle uses the standard elevation-angle
 ground-coverage formula (`rho = pi/2 - minElevation - eta`,
-`sin(eta) = R*cos(minElevation)/r`), with `minElevation = 0` (horizon-
-limited) by default since there's no ground-station concept yet to want a
-higher minimum from.
+`sin(eta) = R*cos(minElevation)/r`), with `minElevation =
+Config::FOOTPRINT_MIN_ELEVATION_DEG` (0°, horizon-limited, by default) --
+the same threshold ground-station target selection uses (below), so "is
+this station in the footprint circle" and "is this station a valid
+targeting candidate" never disagree.
 
 **What the harness derives from this each cycle**, and feeds across the
 hardware-abstraction boundary as plain `FSWInputs`/`ADCS` fields (see
@@ -261,13 +263,93 @@ vectors, the same as it would from a HIL rig or real hardware):
   small perturbation of one.
 - EPS generation gating — see "EPS" below.
 
-**`randomTarget()`'s scale** (harness, `satellite_adcs_sim.cpp`): for the
-same reason, `TARGET`/`SLEW`/`FINE_POINTING`'s random target is placed on
-Earth's real surface (`OrbitFrames::EARTH_RADIUS_M`) rather than an
-arbitrary unit-sphere point — comparable in magnitude to
-`spacecraftPositionWorld` (well-conditioned subtraction) rather than
-negligible next to it (catastrophic cancellation), and a physically
-sensible "ground target" besides.
+**Ground-station targeting** (`GroundStations.h/.cpp`, harness): `TARGET`/
+`SLEW`/`FINE_POINTING`/`REFLECT` all aim at `adcs.target`, which the
+harness sets every simulated frame to the real ECI position of the
+closest ground station currently *within the satellite's footprint*
+(elevation ≥ `Config::GROUND_STATION_MIN_ELEVATION_DEG`, 10° — a typical
+real minimum usable elevation, distinct from
+`Config::FOOTPRINT_MIN_ELEVATION_DEG`'s 0°/horizon-limited pure
+*geometric coverage* circle, see its own comment in `Config.h`) — not an
+arbitrary point, and not a fixed one. `GROUND_STATIONS` is a small
+compiled list of major US cities' geodetic lat/lon, standing in for real
+ground-segment sites (see README.md's Scope section on this project's
+boundary). Each station's real ECI position is recomputed every call
+(`groundStationPositionEci`, `OrbitFrames::geodeticToECEF` composed with
+`ecefToECI` at the current Greenwich sidereal angle) rather than cached,
+since a fixed ECEF site sweeps through ECI as Earth rotates underneath it
+— the same rotation that makes `drawEarth`'s globe visibly spin.
+
+`selectClosestGroundStation` picks the closest (by straight-line slant
+range to the satellite) station among those meeting the minimum-elevation
+threshold (`OrbitFrames::elevationAngleRad`, the same formula
+`drawGroundFootprint`'s coverage circle and pass prediction below both
+use), or returns `nullptr` if none currently do — a station outside the
+footprint is not a viable target at all, so there is deliberately no
+"closest regardless of visibility" fallback. When no station is
+reachable, the harness falls back to pointing at the real Sun position
+instead (`adcs.target = adcs.sunPosition`) — always something physically
+sensible to aim at, never an unreachable ground station and never an
+undefined target. The ground-station case is at real Earth-surface scale
+(`OrbitFrames::EARTH_RADIUS_M`), the same reason the project's earlier
+arbitrary-surface-point target was placed there: comparable in magnitude
+to `spacecraftPositionWorld` (a well-conditioned
+`target - spacecraftPositionWorld` subtraction) rather than negligible
+next to it (catastrophic cancellation) — the Sun fallback doesn't have
+this problem either, being the *dominant* term in that same subtraction
+at ~1.5e11 m.
+
+The harness only resets the attitude controller's integral windup
+(`adcs.resetController()`) when *what's selected* actually changes — a
+different ground station, or the Sun fallback engaging/disengaging — not
+every frame: `adcs.target`'s position updates continuously as the
+selected station's ECI position sweeps with Earth's rotation (or the Sun
+moves along its own much slower apparent path), which the controller
+should track smoothly, not react to as a discrete retarget each cycle.
+
+**Ground-station pass prediction** (`GroundStations.h/.cpp`'s
+`predictGroundStationPasses`, `GroundStationsPanel.h/.cpp`): the Ground
+Stations tab's contact schedule — a first step toward comms-link
+simulation, per this project's own trajectory (see README.md's Scope
+section). For each of the next `Config::PASS_PREDICTION_LOOKAHEAD_S`
+(24h) of simulated time, a *copy* of the real orbital state is propagated
+forward in fixed `Config::PASS_PREDICTION_STEP_S` (15s) increments — the
+same force models as the real propagator and `computePredictedOrbitPath`
+(two-body, J2, drag, SRP, Sun/Moon third-body), for consistency — sampling
+every `GROUND_STATIONS` entry's elevation at each step. A per-station
+state machine detects AOS (elevation crosses above
+`Config::GROUND_STATION_MIN_ELEVATION_DEG`) and LOS (crosses back below),
+tracking the peak elevation reached in between; a pass still open when
+the lookahead window ends is recorded with LOS at the window's own end
+instant, not a fabricated later time. AOS/LOS timing resolution is
+therefore ±`PASS_PREDICTION_STEP_S` (a coarser step trades timing
+precision for prediction speed) — displayed at whole-second resolution in
+the UI, since implying sub-step precision would overstate what a 15s-step
+search actually resolved.
+
+Refreshed on a **real wall-clock** timer (`Config::PASS_PREDICTION_REFRESH_S`,
+30s), not simulated time like `computePredictedOrbitPath`'s own refresh —
+tying a ~5760-step search's cadence to `simDt` would make it run *more*
+often, not less, the faster `SimControls::timeScale` is turned up, the
+opposite of what keeping the frame rate steady at high time-scale needs.
+
+AOS/LOS clock times are converted from Julian Date via the engine's
+`OrbitTime::calendarDate` (the inverse of `julianDate` — Meeus's standard
+Julian-Date-to-Gregorian-calendar algorithm), added to
+`spacecraft-dynamics-sim` alongside this feature since no forward-only
+JD handling previously needed to go the other way.
+
+**Deliberately not modeled**: max data rate, expected data volume, link
+margin, weather, and scheduling priority — a real ground-station pass
+report's other usual fields — are shown in the Ground Stations tab's
+pass-detail card as explicitly "not yet modeled" rather than a plausible-
+looking fabricated number, per this project's standing rule against
+fabricating simulation results. They need a link-budget model (antenna
+gain/pointing loss, path loss, receiver noise figure), a weather model,
+and a scheduling/conflict-resolution concept respectively, none of which
+exist yet — the geometric quantities (`GroundStationPass`'s actual
+fields) are the honest subset this project can compute today from real
+orbital mechanics.
 
 ---
 
@@ -579,6 +661,24 @@ zeroed while `EclipseModel::inEclipse()` (see "Orbital Mechanics" below)
 says the real orbital position is in Earth's shadow — cylindrical shadow
 only, not the true conical umbra/penumbra (a documented simplification,
 not a missing model).
+
+**Eclipse gating is applied by the harness, not the engine**: neither
+`SolarPanel` nor `SunSensor` (in `spacecraft-dynamics-sim`) has any notion
+of eclipse — both compute purely from the geometric sun direction they're
+given, and both headers explicitly document that a scenario wanting
+eclipse-aware behavior has to gate it externally. `satellite_adcs_sim.cpp`
+does this in two places: solar generation is zeroed (above), and
+`SunSensor::Reading.valid` is additionally ANDed with `!inEclipse` before
+being handed to `FSWInputs.sunSensor` — a real coarse sun sensor reports
+no lock when the sun is physically blocked by Earth, not just when the
+geometric direction is undefined. This matters beyond EPS: TRIAD fallback
+(`computeTriadFallback`, `ADCS.cpp`) requires `in.sunSensor.valid`, so
+without this gate it would happily solve a TRIAD attitude correction from
+a sun reference the satellite couldn't actually observe during eclipse.
+`StarTracker` is deliberately *not* gated by eclipse — its own blinding
+model (sun-exclusion angle, slew rate) is independent of it, and a real
+star tracker generally sees better in eclipse (no sun/albedo glare), not
+worse.
 
 **Storage** (`Battery`, in `spacecraft-dynamics-sim`): Coulomb-counting —
 integrates net power (W) over `dt` (s) directly into energy (J), clamped

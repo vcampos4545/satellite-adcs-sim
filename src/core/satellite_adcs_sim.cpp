@@ -20,37 +20,20 @@
 #include "Config.h"
 #include "Cubesat.h"
 #include "SensorTelemetry.h"
+#include "GroundStations.h"
 #include "rendering/SatelliteRenderer.h"
 #include "rendering/MagneticFieldRenderer.h"
 #include "rendering/OrbitRenderer.h"
 #include "rendering/WorldAxesGizmo.h"
 #include "panels/SimulationPanel.h"
 #include "panels/VisualizationPanel.h"
+#include "panels/GroundStationsPanel.h"
 #include "panels/ADCSPanel.h"
 #include "panels/FswPanel.h"
 #include <random>
 #include <memory>
 #include <cmath>
 #include <cstdio>
-
-// Random point on Earth's real surface, for an arbitrary ground-pointing
-// target (TARGET/SLEW/FINE_POINTING modes). Placed at real Earth radius,
-// not an arbitrary unit-sphere point -- now that spacecraftPositionWorld
-// is a real ECI position (~6.9e6 m for LEO), a target near the origin
-// would both be physically meaningless (inside Earth) and numerically
-// broken: `target - spacecraftPositionWorld` with a ~1-unit target and a
-// ~6.9e6-unit spacecraft position loses essentially all of target's
-// contribution to float32 rounding (catastrophic cancellation) -- the
-// direction would come out as just "toward Earth's center" regardless of
-// the random target chosen. A target at comparable (Earth-radius) scale
-// keeps this subtraction well-conditioned.
-static glm::vec3 randomTarget()
-{
-  static std::mt19937 rng(std::random_device{}());
-  static std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-  glm::vec3 v(dist(rng), dist(rng), dist(rng));
-  return glm::normalize(v) * static_cast<float>(OrbitFrames::EARTH_RADIUS_M);
-}
 
 // ---------------------------------------------------------------------------
 // Main
@@ -103,7 +86,8 @@ int main()
   // pointer/actuator pointer at all.
   ADCS adcs;
   adcs.configure(hwConfig, sat.body->orientation);
-  adcs.target = randomTarget();
+  // adcs.target is set below, once orbitState/missionEpochJd exist -- see
+  // the ground-station selection block after they're established.
   float adcsTimer = 0.0f;
   float missionTime = 0.0f;
   float trueErrDeg = 0.0f; // harness-side diagnostic: true (ground-truth) pointing error, held between ADCS cycles like fieldNow below
@@ -186,6 +170,42 @@ int main()
   std::vector<glm::vec2> groundTrackLatLonDeg;
   float groundTrackSampleTimer = 0.0f;
 
+  // adcs.target auto-tracks the closest ground station within the
+  // satellite's footprint (elevation >= Config::GROUND_STATION_MIN_ELEVATION_DEG
+  // -- the same threshold the predicted pass schedule below uses, so
+  // "this is the current target" and "this station appears as a valid
+  // pass" never disagree). A station outside the footprint isn't a
+  // viable target at all -- selectClosestGroundStation returns nullptr
+  // rather than falling back to an unreachable one, and when it does,
+  // adcs.target falls back to the real Sun position instead (see the
+  // reselection block inside the main loop below). selectedGroundStation
+  // is compared by address each frame (stable, since it always points
+  // into the static GROUND_STATIONS array, or is nullptr) purely to know
+  // when the *selection itself* changed, so resetController() (clears
+  // integral windup) only fires on an actual handoff -- a ground-station-
+  // to-ground-station handoff, a station-to-Sun fallback, or back --
+  // not every frame the target's rotating ECI position moves.
+  glm::dvec3 initialTargetEci;
+  const GroundStation *selectedGroundStation = selectClosestGroundStation(
+      orbitState.position, OrbitFrames::gmstRad(missionEpochJd),
+      glm::radians(static_cast<double>(Config::GROUND_STATION_MIN_ELEVATION_DEG)), initialTargetEci);
+  adcs.target = selectedGroundStation ? glm::vec3(initialTargetEci)
+                                      : glm::vec3(SunModel::positionEci(missionEpochJd));
+
+  // Predicted ground-station contact schedule (Ground Stations tab) --
+  // computed once up front and refreshed periodically. Unlike
+  // orbitPathRefreshTimer above, this accumulates real wall-clock dt, not
+  // simDt (see Config::PASS_PREDICTION_REFRESH_S's own comment): a 24h/
+  // 15s-step prediction is real work (thousands of RK4 steps), and tying
+  // its cadence to simDt would make it run more often -- not less -- the
+  // faster SimControls::timeScale is turned up, exactly backwards from
+  // what keeping the frame rate steady at high time-scale needs.
+  std::vector<GroundStationPass> groundStationPasses = predictGroundStationPasses(
+      orbitState, missionEpochJd, glm::radians(static_cast<double>(Config::GROUND_STATION_MIN_ELEVATION_DEG)),
+      Config::PASS_PREDICTION_LOOKAHEAD_S, Config::PASS_PREDICTION_STEP_S);
+  float groundStationPassRefreshTimer = 0.0f;
+  int selectedPassIndex = -1; // Ground Stations tab's selected table row; -1 = none
+
   float lastTime = glfwGetTime();
   while (!gui.shouldClose())
   {
@@ -212,12 +232,6 @@ int main()
       adcs.mode = PointingMode::FINE_POINTING;
     if (gui.isKeyJustPressed(GLFW_KEY_7))
       adcs.mode = PointingMode::REFLECT;
-
-    if (gui.isKeyJustPressed(GLFW_KEY_SPACE))
-    {
-      adcs.target = randomTarget();
-      adcs.resetController(); // clear integral windup from previous target
-    }
 
     if (gui.isKeyJustPressed(GLFW_KEY_T))
     {
@@ -322,15 +336,42 @@ int main()
       // not an arbitrary nearby offset -- now that sat.body->position is
       // real too (~6.9e6 m), placing the sun a small fixed distance away
       // (the old "2 units from the satellite" convention) would suffer
-      // the same catastrophic-cancellation problem randomTarget()'s
-      // comment describes: adding a small offset to spacecraftPositionWorld
-      // and then subtracting it back out to recover a direction loses
-      // almost all of that offset's precision once the base position's
-      // magnitude dwarfs it. The real Sun position doesn't have this
+      // the same catastrophic-cancellation problem a target at Earth-
+      // radius scale avoids (see GroundStations.h/selectClosestGroundStation
+      // above): adding a small offset to spacecraftPositionWorld and then
+      // subtracting it back out to recover a direction loses almost all
+      // of that offset's precision once the base position's magnitude
+      // dwarfs it. The real Sun position doesn't have this
       // problem -- it's the *dominant* term in sunPosition -
       // spacecraftPositionWorld, not a small perturbation of it, so the
       // subtraction stays well-conditioned.
       adcs.sunPosition = glm::vec3(SunModel::positionEci(currentJdNow));
+
+      // Ground-station target selection: recomputed every advanceSim
+      // frame (cheap -- 6 stations, a distance/elevation compare each),
+      // so adcs.target keeps tracking the selected station's real
+      // rotating ECI position even between actual handoffs. A station
+      // must be within the satellite's footprint (elevation >=
+      // Config::GROUND_STATION_MIN_ELEVATION_DEG) to be a viable target
+      // at all -- selectClosestGroundStation returns nullptr rather than
+      // falling back to an out-of-view station, in which case adcs.target
+      // falls back to the real Sun position (computed just above) instead
+      // -- there's always *something* physically sensible to point at,
+      // even with no station currently reachable. Only an actual change
+      // of *what's* selected (a different station, or the Sun fallback
+      // engaging/disengaging) clears controller integral windup -- the
+      // position update itself is continuous, not a discrete retarget the
+      // controller needs to react to as one.
+      glm::dvec3 targetEci;
+      const GroundStation *chosenGroundStation = selectClosestGroundStation(
+          orbitState.position, OrbitFrames::gmstRad(currentJdNow),
+          glm::radians(static_cast<double>(Config::GROUND_STATION_MIN_ELEVATION_DEG)), targetEci);
+      adcs.target = chosenGroundStation ? glm::vec3(targetEci) : adcs.sunPosition;
+      if (chosenGroundStation != selectedGroundStation)
+      {
+        selectedGroundStation = chosenGroundStation;
+        adcs.resetController(); // clear integral windup from the previous target
+      }
 
       // Ambient field at the satellite's real orbital position -- fed to
       // the magnetorquers (they need it every physics substep to turn a
@@ -370,6 +411,17 @@ int main()
         glm::vec3 sunDirWorld = adcs.sunPosition - sat.body->position;
         StarTracker::Reading starReading = sat.starTracker.sample(*sat.body, sunDirWorld);
         SunSensor::Reading sunReading = sat.sunSensor.sample(*sat.body, sunDirWorld);
+        // SunSensor has no eclipse model of its own (see its header:
+        // "valid is always true here... a scenario that wants eclipse-
+        // aware dropouts needs to gate this externally") -- a real coarse
+        // sun sensor reports no lock when the sun itself is physically
+        // blocked by Earth, not just when the geometric direction happens
+        // to be undefined, so the harness applies that blindness here.
+        // This also keeps TRIAD fallback (computeTriadFallback, ADCS.cpp)
+        // honest during eclipse: it already requires in.sunSensor.valid,
+        // but without this gate it would happily TRIAD off a sun
+        // direction the satellite couldn't actually observe.
+        sunReading.valid = sunReading.valid && !inEclipse;
 
         FSWInputs inputs;
         inputs.imu = {imuReading.gyro, imuReading.accel};
@@ -444,6 +496,20 @@ int main()
       world.step(simDt);
     }
 
+    // Ground-station pass schedule: refreshed on a real wall-clock timer
+    // (see groundStationPassRefreshTimer's own declaration comment above)
+    // regardless of pause state -- recomputing while paused just re-runs
+    // the same prediction from the frozen orbitState, harmless, and keeps
+    // the schedule live if the user edits the mission epoch while paused.
+    groundStationPassRefreshTimer += dt;
+    if (groundStationPassRefreshTimer > Config::PASS_PREDICTION_REFRESH_S)
+    {
+      groundStationPasses = predictGroundStationPasses(
+          orbitState, missionEpochJd, glm::radians(static_cast<double>(Config::GROUND_STATION_MIN_ELEVATION_DEG)),
+          Config::PASS_PREDICTION_LOOKAHEAD_S, Config::PASS_PREDICTION_STEP_S);
+      groundStationPassRefreshTimer = 0.0f;
+    }
+
     // =================== DRAW ===================
     // VGL's scene lighting is a single directional light (see GUI.h's
     // m_lightDir / EmbeddedShaders.h's diffuse term), defaulting to an
@@ -471,6 +537,8 @@ int main()
       drawOrbitPath(gui, orbitPathPoints);
     if (vis.showGroundFootprint)
       drawGroundFootprint(gui, orbitState.position, glm::radians(Config::FOOTPRINT_MIN_ELEVATION_DEG));
+    if (vis.showGroundStations)
+      drawGroundStations(gui, OrbitFrames::gmstRad(currentJdNow));
 
     if (vis.showSatellite)
     {
@@ -524,7 +592,8 @@ int main()
     if (vis.showWorldAxesGizmo)
       drawWorldAxesGizmo(gui);
 
-    drawADCSPanel(adcs, sat, telemetry, sim, epoch, vis, orbitState, earthTexture, groundTrackLatLonDeg, currentJdNow, trueErrDeg, inEclipse);
+    drawADCSPanel(adcs, sat, telemetry, sim, epoch, vis, orbitState, earthTexture, groundTrackLatLonDeg, currentJdNow,
+                  groundStationPasses, selectedPassIndex, trueErrDeg, inEclipse);
 
     imguiLayer.endFrame();
     gui.endFrame();

@@ -19,6 +19,7 @@ struct VisualizationSettings
   bool showEarth = true;
   bool showOrbitPath = true;
   bool showGroundFootprint = true;
+  bool showGroundStations = true;
   bool showSatellite = true;
   bool showMagneticField = false;
   bool showSun = true;

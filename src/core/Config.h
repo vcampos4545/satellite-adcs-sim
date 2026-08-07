@@ -83,11 +83,35 @@ namespace Config
 
   // Ground footprint / ground-track minimum elevation: the horizon-limited
   // case (0 deg) shows the full circle a satellite can geometrically see
-  // any part of, not a specific ground station's usable pass window (which
-  // would want a higher minimum, e.g. 10 deg, to exclude low-elevation
-  // passes with poor link geometry -- not modeled here since there's no
-  // ground-station concept yet).
+  // any part of -- a pure visualization of coverage geometry, deliberately
+  // distinct from GROUND_STATION_MIN_ELEVATION_DEG below (a real station's
+  // usable pass window, which wants a higher minimum to exclude low-
+  // elevation passes with poor link geometry/obstruction).
   constexpr float FOOTPRINT_MIN_ELEVATION_DEG = 0.0f;
+
+  // Minimum elevation for a ground-station contact to count as usable --
+  // both for automatic target selection (GroundStations.h's
+  // selectClosestGroundStation) and for the predicted pass schedule
+  // (predictGroundStationPasses/GroundStationsPanel), so "this station is
+  // the current target" and "this station appears as a valid pass" never
+  // disagree. 10 deg is a typical real minimum (excludes near-horizon
+  // passes, where atmospheric attenuation and terrain/building
+  // obstruction usually make the link unusable) -- distinct from
+  // FOOTPRINT_MIN_ELEVATION_DEG's pure horizon-limited geometry above.
+  constexpr float GROUND_STATION_MIN_ELEVATION_DEG = 10.0f;
+
+  // Ground-station pass prediction (predictGroundStationPasses): how far
+  // ahead to search, and the fixed time step the AOS/LOS/max-elevation
+  // search advances by. A LEO pass typically lasts 5-15 minutes, so a 15s
+  // step gives tens of samples per pass (AOS/LOS timing resolution is
+  // +/- one step) without making a 24h search expensive. Recomputed on a
+  // real (wall-clock, not simulated) timer -- see
+  // PASS_PREDICTION_REFRESH_S -- so cost stays constant regardless of
+  // SimControls::timeScale, unlike the orbit path's own simDt-driven
+  // refresh.
+  constexpr double PASS_PREDICTION_LOOKAHEAD_S = 24.0 * 3600.0;
+  constexpr double PASS_PREDICTION_STEP_S = 15.0;
+  constexpr float PASS_PREDICTION_REFRESH_S = 30.0f;
 
   // Ground track: how much history to keep and how often to sample it.
   // Sampling once every GROUND_TRACK_SAMPLE_INTERVAL_S of mission time
