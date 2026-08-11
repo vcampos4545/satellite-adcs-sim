@@ -99,7 +99,6 @@ add_executable(satellite-adcs-sim
   src/core/satellite_adcs_sim.cpp
   src/core/Cubesat.cpp
   src/core/GroundStations.cpp
-  src/core/SimFlightSoftwareHAL.cpp
   src/rendering/SatelliteRenderer.cpp
   src/rendering/MagneticFieldRenderer.cpp
   src/rendering/OrbitRenderer.cpp

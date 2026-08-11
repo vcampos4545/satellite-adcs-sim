@@ -41,6 +41,26 @@ struct Cubesat
   SunSensor sunSensor;
   std::vector<SolarPanel> solarPanels; // one per body face -- see buildCubesatPyramid()
   Battery battery;
+
+  // Environment context the sensor models below need but that isn't
+  // itself a sensor reading -- pushed by the harness once per FSW cycle,
+  // the same "harness pushes plain state" pattern adcs.ambientFieldWorld/
+  // adcs.sunPosition already use, and the same role rod->ambientFieldWorld
+  // already plays per-magnetorquer.
+  glm::vec3 gravity{0.0f};
+  glm::vec3 ambientFieldWorld{0.0f};
+  glm::vec3 sunDirWorld{0.0f};
+  bool inEclipse = false;
+
+  // The only place simulated hardware is translated to/from the plain
+  // FlightTypes.h contract FlightSoftware::step() actually runs on -- see
+  // FlightSoftware.h's own header comment. Every sensor is sampled once,
+  // at the shared FSW rate `dt`; no per-sensor scheduling.
+  FSWInputs sampleSensors(float dt);
+
+  // Applies FlightSoftware::step()'s output to the simulated wheels/
+  // magnetorquers.
+  void applyActuatorCommands(const FSWOutputs &out);
 };
 
 // Builds the simulated hardware AND the matching HardwareConfig ADCS::

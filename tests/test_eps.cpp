@@ -57,23 +57,25 @@ int main()
   {
     FlightSoftware fsw;
     ADCS &adcs = fsw.adcs;
-    FakeFlightSoftwareHAL hal;
     HardwareConfig hw = makeTestHardwareConfig();
     glm::quat trueAtt(1, 0, 0, 0);
-    float dt = 0.05f;
-    fsw.configure(hw, makeTestSchedule(dt), trueAtt, hal);
+    fsw.configure(hw, trueAtt);
     adcs.mode = PointingMode::TARGET;
     adcs.target = glm::vec3(0, 0, 5.0f);
     adcs.ambientFieldWorld = glm::vec3(0, 0, 3e-5f);
-    hal.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
-    hal.mag = {glm::vec3(0, 0, 3e-5f), true};
-    hal.star = {trueAtt, true};
-    hal.power = {0.1f, 6.5f}; // 10% SOC, below default 20% trigger
-    hal.navPosition = glm::vec3(0.0f);
-    for (int w = 0; w < NUM_WHEELS; w++)
-      hal.wheelTelemetry[w] = {0.0f, true};
+    float dt = 0.05f;
     for (int i = 0; i < 50; i++)
-      fsw.step(dt);
+    {
+      FSWInputs in;
+      in.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
+      in.mag = {glm::vec3(0, 0, 3e-5f), true};
+      in.star = {trueAtt, true};
+      in.power = {0.1f, 6.5f}; // 10% SOC, below default 20% trigger
+      in.spacecraftPositionWorld = glm::vec3(0.0f);
+      for (int w = 0; w < NUM_WHEELS; w++)
+        in.wheelTelemetry[w] = {0.0f, true};
+      fsw.step(in, dt);
+    }
     CHECK(fsw.fdir.state() == FdirState::SAFE_HOLD &&
               (fsw.fdir.activeFaults() & FDIR_FAULT_LOW_BATTERY) &&
               adcs.mode == PointingMode::TARGET &&
@@ -87,23 +89,25 @@ int main()
   {
     FlightSoftware fsw;
     ADCS &adcs = fsw.adcs;
-    FakeFlightSoftwareHAL hal;
     HardwareConfig hw = makeTestHardwareConfig();
     glm::quat trueAtt(1, 0, 0, 0);
-    float dt = 0.05f;
-    fsw.configure(hw, makeTestSchedule(dt), trueAtt, hal);
+    fsw.configure(hw, trueAtt);
     adcs.mode = PointingMode::TARGET;
     adcs.target = glm::vec3(0, 0, 5.0f);
     adcs.ambientFieldWorld = glm::vec3(0, 0, 3e-5f);
-    hal.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
-    hal.mag = {glm::vec3(0, 0, 3e-5f), true};
-    hal.star = {trueAtt, true};
-    hal.power = {0.8f, 8.0f};
-    hal.navPosition = glm::vec3(0.0f);
-    for (int w = 0; w < NUM_WHEELS; w++)
-      hal.wheelTelemetry[w] = {0.0f, true};
+    float dt = 0.05f;
     for (int i = 0; i < 50; i++)
-      fsw.step(dt);
+    {
+      FSWInputs in;
+      in.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
+      in.mag = {glm::vec3(0, 0, 3e-5f), true};
+      in.star = {trueAtt, true};
+      in.power = {0.8f, 8.0f};
+      in.spacecraftPositionWorld = glm::vec3(0.0f);
+      for (int w = 0; w < NUM_WHEELS; w++)
+        in.wheelTelemetry[w] = {0.0f, true};
+      fsw.step(in, dt);
+    }
     CHECK(fsw.fdir.state() == FdirState::NOMINAL && adcs.effectiveMode == PointingMode::TARGET &&
               fsw.systemMode() == SystemMode::NOMINAL,
           "Healthy battery (80%% SOC) -> stays NOMINAL");

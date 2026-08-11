@@ -1,6 +1,5 @@
 #pragma once
 #include "FlightTypes.h"
-#include "FlightSoftwareHAL.h"
 #include <cstdio>
 #include <glm/gtc/constants.hpp>
 
@@ -55,42 +54,3 @@ inline HardwareConfig makeTestHardwareConfig()
   hw.busInertiaTensor = glm::mat3(0.002f, 0, 0, 0, 0.002f, 0, 0, 0, 0.002f);
   return hw;
 }
-
-// Every period equal to `dt` -- every sensor + the ADCS task fires on every
-// single FlightSoftware::step(dt) call, so a test loop that calls step()
-// once per iteration gets exactly one full FSW cycle per call, matching the
-// cadence tests already expect.
-inline FswSchedule makeTestSchedule(float dt)
-{
-  FswSchedule s;
-  s.imuPeriodS = s.magPeriodS = s.starTrackerPeriodS = s.sunSensorPeriodS =
-      s.powerPeriodS = s.navPeriodS = s.adcsPeriodS = dt;
-  return s;
-}
-
-// A settable fake HAL for tests: set the public sample fields directly
-// (mirroring how test files already hand-build FSWInputs), call
-// FlightSoftware::step(dt), then read lastWheelTorqueNm/
-// lastTorquerMomentAm2 or check FlightSoftware/ADCS/FDIR state.
-struct FakeFlightSoftwareHAL : public FlightSoftwareHAL
-{
-  ImuSample imu;
-  MagSample mag;
-  StarTrackerSample star;
-  SunSensorSample sunSensor;
-  PowerSample power;
-  std::array<WheelTelemetry, NUM_WHEELS> wheelTelemetry{};
-  glm::vec3 navPosition{0.0f};
-  std::array<float, NUM_WHEELS> lastWheelTorqueNm{};
-  std::array<float, NUM_TORQUERS> lastTorquerMomentAm2{};
-
-  ImuSample readImu(float) override { return imu; }
-  MagSample readMag(float) override { return mag; }
-  StarTrackerSample readStarTracker() override { return star; }
-  SunSensorSample readSunSensor() override { return sunSensor; }
-  PowerSample readPower() override { return power; }
-  std::array<WheelTelemetry, NUM_WHEELS> readWheelTelemetry() override { return wheelTelemetry; }
-  glm::vec3 readNavPosition() override { return navPosition; }
-  void commandWheelTorque(int i, float t) override { lastWheelTorqueNm[i] = t; }
-  void commandTorquerMoment(int i, float m) override { lastTorquerMomentAm2[i] = m; }
-};

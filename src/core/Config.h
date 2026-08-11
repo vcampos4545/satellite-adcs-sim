@@ -137,34 +137,12 @@ namespace Config
 
   constexpr float TUMBLE_KICK_RAD_S = 1.5f;
 
-  // The ADCS task's own period (20 Hz) -- attitude estimation/guidance/
-  // control/FDIR, the "control loop" rate. Also the fixed simulated-time
-  // increment SimulationPanel's "Step" button advances by while paused.
-  // Distinct from the individual sensor rates below and from
-  // FIRMWARE_TICK_S, the fast tick FlightSoftware::step() itself is called
-  // at -- see FswSchedule (src/fsw/FlightSoftwareHAL.h) for how these
-  // combine into one multi-rate schedule.
+  // Nominal FSW cycle period (20 Hz) -- the single shared rate orbit
+  // propagation, PhysicsWorld::step(), and one FlightSoftware::step() cycle
+  // all advance by together, once per main()-loop iteration (see its own
+  // fixed-step accumulator). Also the fixed simulated-time increment
+  // SimulationPanel's "Step" button advances by while paused.
   constexpr float TIME_STEP_S = 0.05f;
-
-  // Per-sensor task periods for FswSchedule -- each representative of a
-  // real cubesat-class component's own rate, not a fabricated number: a
-  // MEMS IMU runs much faster than a star tracker's image-processing-bound
-  // solve rate, and EPS/nav telemetry update far slower than either. Wheel
-  // telemetry has no period of its own -- see FswSchedule's own comment.
-  constexpr float IMU_PERIOD_S = 0.01f;          // 100 Hz
-  constexpr float MAG_PERIOD_S = 0.05f;          // 20 Hz
-  constexpr float STAR_TRACKER_PERIOD_S = 0.2f;  // 5 Hz
-  constexpr float SUN_SENSOR_PERIOD_S = 0.1f;    // 10 Hz
-  constexpr float POWER_PERIOD_S = 1.0f;         // 1 Hz
-  constexpr float NAV_PERIOD_S = 1.0f;           // 1 Hz
-
-  // The tick FlightSoftware::step() itself is called at -- must be <= the
-  // fastest scheduled task period (IMU's, currently the fastest) so no
-  // task's cadence is ever missed. The elapsed-time-accumulator pattern in
-  // FlightSoftware::step() tolerates a tick that doesn't evenly divide
-  // every period (it just fires a little late and keeps the remainder), so
-  // exact divisibility isn't required, only tick <= fastest period.
-  constexpr float FIRMWARE_TICK_S = IMU_PERIOD_S;
 
   constexpr int TELEMETRY_HISTORY_SAMPLES = 300;
 

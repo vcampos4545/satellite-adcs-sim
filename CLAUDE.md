@@ -27,16 +27,17 @@ about whether orbital motion exists; that multi-satellite scale problem is
 job, at a different fidelity. See `README.md`'s "Scope" section for the
 full boundary.
 
-`ADCS`/`FDIR`/`FlightSoftware`/`FlightSoftwareHAL` (`src/fsw/ADCS.*`,
-`src/fsw/FDIR.*`, `src/fsw/FlightSoftware.*`, `src/fsw/FlightSoftwareHAL.h`)
-are **hardware-abstracted**: they never reference `RigidBody`,
-`PhysicsWorld`, or any simulation sensor/actuator type — only the
-plain-data contract in `src/fsw/FlightTypes.h`. `FlightSoftware::step()`
-— this project's actual firmware main-loop body, owning `ADCS` and `FDIR`
-as peers and pulling/pushing sensor/actuator data only through the
-injected `FlightSoftwareHAL` interface — never dynamically allocates or
-holds an RNG, and `ADCS::step()`/`control()`/`updateEstimator()` remain
-pure functions of `(internal state, FSWInputs, dt) -> FSWOutputs`.
+`ADCS`/`FDIR`/`FlightSoftware` (`src/fsw/ADCS.*`, `src/fsw/FDIR.*`,
+`src/fsw/FlightSoftware.*`) are **hardware-abstracted**: they never
+reference `RigidBody`, `PhysicsWorld`, or any simulation sensor/actuator
+type — only the plain-data contract in `src/fsw/FlightTypes.h`.
+`FlightSoftware::step()` — this project's actual cyclic FSW entry point,
+owning `ADCS` and `FDIR` as peers — is a pure function of `(internal
+state, FSWInputs, dt) -> FSWOutputs`, same as `ADCS::step()`/`control()`/
+`updateEstimator()` themselves, and never dynamically allocates or holds
+an RNG. `Cubesat::sampleSensors()`/`applyActuatorCommands()`
+(`src/core/Cubesat.h`/`.cpp`) are the one place simulated hardware is
+translated to/from that contract — deliberately no HAL/interface layer.
 This is deliberate: the same code should be able to run against this
 simulation, a HIL rig, or real flight hardware without modification. Read
 `docs/ALGORITHMS.md` before touching this code — it's the standing

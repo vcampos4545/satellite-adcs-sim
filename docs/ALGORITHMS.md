@@ -44,22 +44,23 @@ them, not something FSW code depends on or could tell from the inside.
 
 ## Hardware-Abstraction Boundary
 
-`ADCS`/`FDIR`/`FlightSoftware`/`FlightSoftwareHAL` (the flight software)
-never reference `RigidBody`, `PhysicsWorld`, or any sensor/actuator
-simulation type — see `src/fsw/FlightTypes.h`. `FlightSoftware::step()` —
-which owns `ADCS` and `FDIR` as peers and is this project's actual
-firmware main-loop body (see "`FlightSoftware` / `SystemMode`" below) —
-only ever crosses the sim boundary through `FlightSoftwareHAL`, a
-pull-based sensor/actuator interface built entirely from plain
-`FlightTypes.h` data. This is the literal seam a HIL rig or real flight
-hardware would replace: a HIL adapter implements `FlightSoftwareHAL`
-against real ADC/I2C/SPI reads and driver writes instead of
-`src/core/SimFlightSoftwareHAL.h`/`.cpp` (this simulation's
-implementation), and `FlightSoftware`/`ADCS`/`FDIR` don't change at all.
-`ADCS::step()`/`control()`/`updateEstimator()` remain pure functions of
-`(internal state, FSWInputs, dt) -> FSWOutputs`, unaffected by any of
-this. It's also why `tests/` can build FSW logic against nothing but
-`glm` (see `tests/CMakeLists.txt`).
+`ADCS`/`FDIR`/`FlightSoftware` (the flight software) never reference
+`RigidBody`, `PhysicsWorld`, or any sensor/actuator simulation type — see
+`src/fsw/FlightTypes.h`. `FlightSoftware::step()` — which owns `ADCS` and
+`FDIR` as peers and is this project's actual cyclic FSW entry point (see
+"`FlightSoftware` / `SystemMode`" below) — is a pure function of
+`(internal state, FSWInputs, dt) -> FSWOutputs`, same as
+`ADCS::step()`/`control()`/`updateEstimator()` themselves. There is
+deliberately no interface/HAL type crossing into `src/fsw/` at all — the
+one place simulated hardware is translated to/from this plain-data
+contract is `Cubesat::sampleSensors()`/`applyActuatorCommands()`
+(`src/core/Cubesat.h`/`.cpp`), called by `main()` immediately before/after
+`flightSoftware.step()`. This is the seam a HIL rig or real flight
+hardware would eventually replace: a HIL harness would build `FSWInputs`
+from real sensors and apply the returned `FSWOutputs` to real actuators
+the same way `Cubesat`'s two methods do here, without `FlightSoftware`/
+`ADCS`/`FDIR` changing at all. It's also why `tests/` can build FSW logic
+against nothing but `glm` (see `tests/CMakeLists.txt`).
 
 ---
 
@@ -72,12 +73,29 @@ The satellite's real orbital position/velocity is truth-propagated by
 and only ever sees the derived quantities below, and not by
 `PhysicsWorld`'s own integration, which stays float32.
 
-**Double-precision truth, bridged into `RigidBody` every frame**: a LEO
-orbital radius (~6.9e6 m) leaves float32 with only meter-level precision,
-and that error would compound every integration step over a mission that
-can run for months — so the *integration* itself happens in the
-double-precision `orbit/` module, not through `PhysicsWorld`'s own
-(float32) translational stepping. Each frame, the harness copies the
+**One fixed-rate loop drives orbit propagation, `PhysicsWorld::step()`, and
+one `FlightSoftware` cycle together**, in that order, once per
+`Config::TIME_STEP_S` (`main()`'s FSW block): `orbitPropagator.step()` →
+environment sampling (sun/eclipse/ground-station-target/ambient field) →
+`world.step()` (rotational dynamics, integrating whatever actuator
+commands `Cubesat::applyActuatorCommands()` issued at the *end* of the
+previous cycle — zero-order hold, the standard discretization for a
+sampled control loop) → `Cubesat::sampleSensors()` →
+`flightSoftware.step()` → `Cubesat::applyActuatorCommands()`. Keeping
+orbit propagation and `world.step()` immediately adjacent inside the same
+loop iteration (rather than, e.g., orbit propagation running once per
+render frame while `world.step()` runs separately after an inner FSW
+sub-loop) is deliberate: it's what makes physics and FSW share one
+consistent per-cycle view of the world, and what guarantees every
+actuator command a control cycle issues actually gets integrated by
+`world.step()` before the next one runs.
+
+**Double-precision truth, bridged into `RigidBody` every FSW cycle**: a
+LEO orbital radius (~6.9e6 m) leaves float32 with only meter-level
+precision, and that error would compound every integration step over a
+mission that can run for months — so the *integration* itself happens in
+the double-precision `orbit/` module, not through `PhysicsWorld`'s own
+(float32) translational stepping. Each cycle, the harness copies the
 result into `sat.body->position` as a single non-accumulating cast (see
 `rigidbody/orbit/OrbitState.h`'s header comment) — this is safe precisely
 *because* it's a fresh copy from the double-precision truth every frame,
@@ -712,83 +730,38 @@ used during commissioning/testing.
 ## `FlightSoftware` / `SystemMode`
 
 `FlightSoftware` (`src/fsw/FlightSoftware.h`/`.cpp`) is this project's
-actual firmware main-loop body — the same shape a bare-metal (no RTOS)
-`main()`'s `while(1)` loop has, where each task (read a sensor, run the
-attitude estimator/controller, write actuator commands) is rate-gated
-against its own configured period rather than everything running in
-lockstep at one shared rate. `FlightSoftware::step(dt)` is meant to be
-called once per **firmware tick** (see `Config::FIRMWARE_TICK_S` in the
-harness — the fastest task's own period, so no task's cadence is ever
-missed), not once per ADCS cycle.
+actual cyclic FSW entry point: sensor data in (`FSWInputs`), actuator
+commands out (`FSWOutputs`), once per call. It owns `ADCS` and `FDIR` as
+peers and runs them in the same "sense → evaluate health → act" order a
+real cyclic executive follows:
 
-### `FlightSoftwareHAL` / `FswSchedule` (`src/fsw/FlightSoftwareHAL.h`)
-
-`FlightSoftwareHAL` is a pull-based interface `FlightSoftware::step()`
-calls into on its own schedule — `readImu()`, `readMag()`,
-`readStarTracker()`, `readSunSensor()`, `readPower()`,
-`readWheelTelemetry()`, `readNavPosition()`, plus `commandWheelTorque()`/
-`commandTorquerMoment()` for actuator writes. Like the rest of `src/fsw/`
-it only ever sees plain `FlightTypes.h` data — this is the literal seam a
-HIL adapter would implement against real ADC/I2C/SPI reads and driver
-writes instead of simulated hardware (`src/core/SimFlightSoftwareHAL.h`/
-`.cpp` is that implementation for this simulation).
-
-`FswSchedule` gives each task its own period (`imuPeriodS`, `magPeriodS`,
-`starTrackerPeriodS`, `sunSensorPeriodS`, `powerPeriodS`, `navPeriodS`,
-`adcsPeriodS`), each representative of a real cubesat-class component's
-own rate rather than one shared number: a MEMS IMU runs far faster than a
-star tracker's image-processing-bound solve rate, and EPS/nav telemetry
-update far slower than either (see `Config::*_PERIOD_S` for this
-project's defaults). Wheel telemetry has no period of its own — it's read
-directly inside the ADCS task below, the same way a real wheel-driver
-telemetry read is usually coupled to the control task that commands it,
-not sampled independently.
-
-### `step(dt)`'s internal schedule
-
-Each sensor task is rate-gated independently: an elapsed-time accumulator
-per task (`imuTimer_`, `magTimer_`, ...) accumulates `dt` every call, and
-fires (pulling a fresh reading via the HAL, resetting its own timer) once
-it reaches that task's configured period — the asynchronous multi-rate
-scheduling shape a real bare-metal firmware main loop has. `configure()`
-"primes" every timer to its own period up front, so the very first
-`step()` call triggers an initial read of every sensor rather than
-running the first ADCS cycle against all-default-constructed samples.
-
-The ADCS task itself is rate-gated the same way, against `adcsPeriodS`,
-and runs the same "sense → evaluate health → act" order a real cyclic
-executive follows, using whichever cached reading each sensor task above
-most recently produced:
-
-1. `adcs.updateEstimator(in, adcsPeriodS)` — EKF predict+correct; publishes
+1. `adcs.updateEstimator(in, dt)` — EKF predict+correct; publishes
    `attitudeUncertaintyDeg` and (implicitly, via `gyroBiasEstimate`) the
    bias-corrected rate as `ADCS`'s own telemetry.
-2. `fdir.evaluate(fdirIn, adcsPeriodS)` — reads that telemetry plus wheel
-   health/battery SOC/commanded mode (wheel telemetry pulled fresh here,
-   not from a cached schedule entry — see above), and resolves
-   `adcs.effectiveMode`. Runs even under `adcs.manualOverride` — a fault
-   is still worth detecting/logging while a human has the stick;
-   `adcs.control()` below is what actually respects `manualOverride`.
-3. `adcs.control(in, adcsPeriodS)` — guidance + attitude control +
-   desaturation + actuator allocation, executing whatever `effectiveMode`
-   step 2 just resolved, then pushes the resulting commands straight out
-   through `hal->commandWheelTorque()`/`commandTorquerMoment()` — no
-   struct returned for the caller to apply later, matching how real
-   firmware calls a driver write() in the same loop iteration it computed
-   the command.
+2. `fdir.evaluate(fdirIn, dt)` — reads that telemetry plus wheel health/
+   battery SOC/commanded mode, and resolves `adcs.effectiveMode`. Runs
+   even under `adcs.manualOverride` — a fault is still worth detecting/
+   logging while a human has the stick; `adcs.control()` below is what
+   actually respects `manualOverride`.
+3. `adcs.control(in, dt)` — guidance + attitude control + desaturation +
+   actuator allocation, executing whatever `effectiveMode` step 2 just
+   resolved.
 
-`FlightSoftware::step(dt)` returns `true` iff the ADCS task actually ran
-this call, so a caller that needs to know "did a new control cycle just
-happen" (this project's harness, for EPS/telemetry bookkeeping) doesn't
-have to assume every tick did something.
+Deliberately no HAL/interface layer sits between `FlightSoftware` and the
+harness — `step()` is a pure function of `(internal state, FSWInputs, dt)
+-> FSWOutputs`, same shape as `ADCS::step()` itself (see "Hardware-
+Abstraction Boundary" above). The harness's main loop is what bridges
+between this and simulated hardware, via `Cubesat::sampleSensors()`/
+`applyActuatorCommands()` (`src/core/Cubesat.h`/`.cpp`) — see "Orbital
+Mechanics"'s note on the unified fixed-rate loop for exactly where those
+calls happen relative to `world.step()`/`orbitPropagator.step()`.
 
 `ADCS` also exposes a thin `step(in, dt)` convenience wrapper
 (`updateEstimator()` + `effectiveMode = mode` + `control()`) for
-FDIR-agnostic callers that never go through `FlightSoftware`/the HAL at
-all — this project's own `tests/test_adcs_control.cpp` and
-`tests/test_flight_software.cpp` use it directly, since they exercise
-guidance/control/estimation behavior without needing a fault monitor or
-scheduler in the loop.
+FDIR-agnostic callers — this project's own `tests/test_adcs_control.cpp`
+and `tests/test_flight_software.cpp` use it directly, since they exercise
+guidance/control/estimation behavior without needing a fault monitor in
+the loop.
 
 ### `SystemMode`
 

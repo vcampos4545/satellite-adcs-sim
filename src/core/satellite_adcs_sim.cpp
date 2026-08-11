@@ -19,7 +19,6 @@
 #include "ImGuiLayer.h"
 #include "Config.h"
 #include "Cubesat.h"
-#include "SimFlightSoftwareHAL.h"
 #include "SensorTelemetry.h"
 #include "GroundStations.h"
 #include "rendering/SatelliteRenderer.h"
@@ -87,33 +86,26 @@ int main()
 
   glm::vec2 lastMousePos = gui.getMousePosition();
 
-  // Flight software: FlightSoftware is this project's actual firmware
-  // main-loop body (see src/fsw/FlightSoftware.h) -- owns ADCS (attitude
+  // Flight software: FlightSoftware is this project's actual cyclic FSW
+  // entry point (see src/fsw/FlightSoftware.h) -- owns ADCS (attitude
   // estimation/guidance/control/allocation) and FDIR (fault detection/
   // mode override) as peers, and is hardware-abstracted the same way ADCS
   // itself is (see FlightTypes.h): configure() gives it a fixed hardware
-  // description, a multi-rate task schedule, and an initial attitude
-  // estimate; every tick after this, step() pulls sensor data and pushes
-  // actuator commands through fswHal (see SimFlightSoftwareHAL.h) on its
-  // own internal per-task schedule, never seeing a RigidBody*/sensor
+  // description and an initial attitude estimate; every cycle after this,
+  // step() only ever sees plain FSWInputs this loop builds from `sat`
+  // (Cubesat::sampleSensors(), the one place simulated hardware is
+  // translated to/from FSW's plain-data contract) and returns plain
+  // FSWOutputs this loop applies via `sat.applyActuatorCommands()`.
+  // Neither FlightSoftware nor ADCS ever holds a RigidBody*/sensor
   // pointer/actuator pointer at all. `adcs` stays a local reference into
   // it so the rest of this file's existing adcs.foo calls (mode, target,
   // telemetry fields, ...) don't need to change.
-  SimFlightSoftwareHAL fswHal(sat);
   FlightSoftware flightSoftware;
   ADCS &adcs = flightSoftware.adcs;
-  FswSchedule fswSchedule;
-  fswSchedule.imuPeriodS = Config::IMU_PERIOD_S;
-  fswSchedule.magPeriodS = Config::MAG_PERIOD_S;
-  fswSchedule.starTrackerPeriodS = Config::STAR_TRACKER_PERIOD_S;
-  fswSchedule.sunSensorPeriodS = Config::SUN_SENSOR_PERIOD_S;
-  fswSchedule.powerPeriodS = Config::POWER_PERIOD_S;
-  fswSchedule.navPeriodS = Config::NAV_PERIOD_S;
-  fswSchedule.adcsPeriodS = Config::TIME_STEP_S;
-  flightSoftware.configure(hwConfig, fswSchedule, sat.body->orientation, fswHal);
+  flightSoftware.configure(hwConfig, sat.body->orientation);
   // adcs.target is set below, once orbitState/missionEpochJd exist -- see
   // the ground-station selection block after they're established.
-  float fswTickTimer = 0.0f;
+  float fswTimer = 0.0f;
   float missionTime = 0.0f;
   float trueErrDeg = 0.0f; // harness-side diagnostic: true (ground-truth) pointing error, held between ADCS cycles like fieldNow below
 
@@ -265,153 +257,152 @@ int main()
     {
       missionTime += simDt;
 
-      // Real orbital truth, propagated every frame at simDt (RK4 is
-      // stable at any step size -- smaller just means more calls, not
-      // less accuracy; larger, from a high timeScale, trades a little
-      // accuracy for speed, matching this project's existing debug-tool
-      // posture) -- integrated independently of PhysicsWorld::step()
-      // below in double precision, then bridged into sat.body->position
-      // as a single non-accumulating cast every frame (see
-      // OrbitState.h's header comment for why the double-precision
-      // integration itself has to stay separate from RigidBody's float32
-      // state, even though the *result* is copied into it here). Because
-      // this is a fresh cast from the true state each frame rather than
-      // something PhysicsWorld itself integrates, there's no float32
-      // accumulation risk -- sat.body->velocity is deliberately never set
-      // to match, so PhysicsWorld's own (float32) translational
-      // integration contributes nothing on top of this.
-      orbitPropagator.step(orbitState, simDt);
-      // Recomputed from the Simulation tab's live-editable fields every
-      // frame -- cheap (six ints/one float into a JD formula), and means
-      // an edit takes effect immediately without a separate "apply" step.
-      missionEpochJd = OrbitTime::julianDate(epoch.year, epoch.month, epoch.day, epoch.hour, epoch.minute, epoch.second);
-      sunGravity->epochJd = missionEpochJd;
-      moonGravity->epochJd = missionEpochJd;
-      srp->epochJd = missionEpochJd;
-      currentJdNow = OrbitTime::advance(missionEpochJd, orbitState.missionTimeS);
-      earthRelativePositionNow = glm::vec3(orbitState.position); // single non-accumulating cast -- see OrbitState.h
-      sat.body->position = earthRelativePositionNow;
-      glm::dvec3 sunDirEci = SunModel::directionEci(currentJdNow);
-      inEclipse = EclipseModel::inEclipse(orbitState.position, sunDirEci);
-      moonPositionNow = glm::vec3(MoonModel::positionEci(currentJdNow)); // single non-accumulating cast, same as earthRelativePositionNow
-
-      // Refresh the predicted-path polyline periodically (not every
-      // frame -- see ORBIT_PATH_REFRESH_S) since it only drifts slowly
-      // (mainly from J2) cycle to cycle.
-      orbitPathRefreshTimer += simDt;
-      if (orbitPathRefreshTimer > Config::ORBIT_PATH_REFRESH_S)
+      // One fixed-rate loop drives orbit propagation, PhysicsWorld::step(),
+      // and one FlightSoftware cycle together, in that order, matching how
+      // a real sampled control loop is discretized: physics integrates
+      // using whatever actuator commands were applied at the *end* of the
+      // previous cycle (zero-order hold), then FSW reads the freshly-
+      // integrated state and computes the next command. A `while`, not an
+      // `if`: at timeScale > 1x, simDt can span more than one nominal
+      // Config::TIME_STEP_S cycle in a single render frame -- an `if`
+      // would silently run everything at a *slower relative rate* the
+      // faster time is scaled (fewer corrections per orbit, and fewer
+      // physics substeps), which would visibly degrade pointing/detumble
+      // stability at high speeds for no physical reason. Catching up with
+      // a fixed-size `while` keeps every system's cadence correct relative
+      // to simulated time regardless of timeScale, the same fixed-step-
+      // accumulator pattern PhysicsWorld::step() already uses internally
+      // one level down.
+      fswTimer += simDt;
+      while (fswTimer > Config::TIME_STEP_S)
       {
-        orbitPathPoints = computePredictedOrbitPath(orbitState, Config::ORBIT_PATH_POINTS, missionEpochJd);
-        orbitPathRefreshTimer = 0.0f;
-      }
+        fswTimer -= Config::TIME_STEP_S;
 
-      // Sample the ground track periodically (not every frame -- see
-      // GROUND_TRACK_SAMPLE_INTERVAL_S).
-      groundTrackSampleTimer += simDt;
-      if (groundTrackSampleTimer > Config::GROUND_TRACK_SAMPLE_INTERVAL_S)
-      {
-        OrbitFrames::Geodetic geo = OrbitFrames::eciToGeodeticDeg(orbitState.position, OrbitFrames::gmstRad(currentJdNow));
-        groundTrackLatLonDeg.push_back(glm::vec2(static_cast<float>(geo.latDeg), static_cast<float>(geo.lonDeg)));
-        if (static_cast<int>(groundTrackLatLonDeg.size()) > Config::GROUND_TRACK_MAX_POINTS)
-          groundTrackLatLonDeg.erase(groundTrackLatLonDeg.begin());
-        groundTrackSampleTimer = 0.0f;
-      }
+        // =================== ORBIT (translational truth) ===================
+        // RK4 is stable at any step size -- smaller just means more calls,
+        // not less accuracy -- integrated independently of
+        // PhysicsWorld::step() below in double precision, then bridged
+        // into sat.body->position as a single non-accumulating cast every
+        // cycle (see OrbitState.h's header comment for why the double-
+        // precision integration itself has to stay separate from
+        // RigidBody's float32 state, even though the *result* is copied
+        // into it here). Because this is a fresh cast from the true state
+        // each cycle rather than something PhysicsWorld itself integrates,
+        // there's no float32 accumulation risk -- sat.body->velocity is
+        // deliberately never set to match, so PhysicsWorld's own (float32)
+        // translational integration contributes nothing on top of this.
+        orbitPropagator.step(orbitState, Config::TIME_STEP_S);
+        // Recomputed from the Simulation tab's live-editable fields every
+        // cycle -- cheap (six ints/one float into a JD formula), and means
+        // an edit takes effect immediately without a separate "apply" step.
+        missionEpochJd = OrbitTime::julianDate(epoch.year, epoch.month, epoch.day, epoch.hour, epoch.minute, epoch.second);
+        sunGravity->epochJd = missionEpochJd;
+        moonGravity->epochJd = missionEpochJd;
+        srp->epochJd = missionEpochJd;
+        currentJdNow = OrbitTime::advance(missionEpochJd, orbitState.missionTimeS);
+        earthRelativePositionNow = glm::vec3(orbitState.position); // single non-accumulating cast -- see OrbitState.h
+        sat.body->position = earthRelativePositionNow;
+        glm::dvec3 sunDirEci = SunModel::directionEci(currentJdNow);
+        inEclipse = EclipseModel::inEclipse(orbitState.position, sunDirEci);
+        moonPositionNow = glm::vec3(MoonModel::positionEci(currentJdNow)); // single non-accumulating cast, same as earthRelativePositionNow
 
-      adcs.sunPosition = glm::vec3(SunModel::positionEci(currentJdNow));
+        // Refresh the predicted-path polyline periodically (not every
+        // cycle -- see ORBIT_PATH_REFRESH_S) since it only drifts slowly
+        // (mainly from J2) cycle to cycle.
+        orbitPathRefreshTimer += Config::TIME_STEP_S;
+        if (orbitPathRefreshTimer > Config::ORBIT_PATH_REFRESH_S)
+        {
+          orbitPathPoints = computePredictedOrbitPath(orbitState, Config::ORBIT_PATH_POINTS, missionEpochJd);
+          orbitPathRefreshTimer = 0.0f;
+        }
 
-      // Ground-station target selection: recomputed every advanceSim
-      // frame (cheap -- 6 stations, a distance/elevation compare each),
-      // so adcs.target keeps tracking the selected station's real
-      // rotating ECI position even between actual handoffs. A station
-      // must be within the satellite's footprint (elevation >=
-      // Config::GROUND_STATION_MIN_ELEVATION_DEG) to be a viable target
-      // at all -- selectClosestGroundStation returns nullptr rather than
-      // falling back to an out-of-view station, in which case
-      // adcs.targetValid goes false and ADCS's own guidance falls back
-      // to sun-relative pointing for TARGET/SLEW/FINE_POINTING/REFLECT
-      // (see ADCS.h's targetValid comment) -- the typical real-ADCS
-      // convention for "this mode's reference isn't available right
-      // now," rather than this harness spoofing `target` itself to point
-      // somewhere else. adcs.target is simply left stale (harmless --
-      // unread while !targetValid) when no station is selected. Only an
-      // actual change of *what's* selected (a different station, or the
-      // Sun fallback engaging/disengaging) clears controller integral
-      // windup -- the position update itself is continuous, not a
-      // discrete retarget the controller needs to react to as one.
-      glm::dvec3 targetEci;
-      const GroundStation *chosenGroundStation = selectClosestGroundStation(
-          orbitState.position, OrbitFrames::gmstRad(currentJdNow),
-          glm::radians(static_cast<double>(Config::GROUND_STATION_MIN_ELEVATION_DEG)), targetEci);
-      adcs.targetValid = (chosenGroundStation != nullptr);
-      if (chosenGroundStation)
-        adcs.target = glm::vec3(targetEci);
-      if (chosenGroundStation != selectedGroundStation)
-      {
-        selectedGroundStation = chosenGroundStation;
-        adcs.resetController(); // clear integral windup from the previous target
-      }
+        // Sample the ground track periodically (not every cycle -- see
+        // GROUND_TRACK_SAMPLE_INTERVAL_S).
+        groundTrackSampleTimer += Config::TIME_STEP_S;
+        if (groundTrackSampleTimer > Config::GROUND_TRACK_SAMPLE_INTERVAL_S)
+        {
+          OrbitFrames::Geodetic geo = OrbitFrames::eciToGeodeticDeg(orbitState.position, OrbitFrames::gmstRad(currentJdNow));
+          groundTrackLatLonDeg.push_back(glm::vec2(static_cast<float>(geo.latDeg), static_cast<float>(geo.lonDeg)));
+          if (static_cast<int>(groundTrackLatLonDeg.size()) > Config::GROUND_TRACK_MAX_POINTS)
+            groundTrackLatLonDeg.erase(groundTrackLatLonDeg.begin());
+          groundTrackSampleTimer = 0.0f;
+        }
 
-      // Ambient field at the satellite's real orbital position -- fed to
-      // the magnetorquers (they need it every physics substep to turn a
-      // commanded dipole moment into torque) and to ADCS (it needs it to
-      // interpret the magnetometer), same role adcs.gravity plays for the
-      // IMU.
-      fieldNow = magField.sample(earthRelativePositionNow);
-      for (auto *rod : sat.magnetorquers)
-        rod->ambientFieldWorld = fieldNow;
-      adcs.ambientFieldWorld = fieldNow;
+        adcs.sunPosition = glm::vec3(SunModel::positionEci(currentJdNow));
 
-      // Environment context the HAL's sensor reads need but that isn't
-      // itself a sensor reading -- pushed once per outer frame, the same
-      // role adcs.ambientFieldWorld/adcs.sunPosition already play as
-      // harness-pushed state on ADCS itself. sat.body->position is only
-      // bridged from orbitState once per frame (see main()'s own comment
-      // on that), so sunDirWorld is the same value across every fast tick
-      // within this frame -- computing it once here, not per tick, is not
-      // a fidelity loss.
-      glm::vec3 sunDirWorld = adcs.sunPosition - sat.body->position;
-      fswHal.setEnvironment(gravity, fieldNow, sunDirWorld, inEclipse);
+        // Ground-station target selection: recomputed every FSW cycle
+        // (cheap -- 6 stations, a distance/elevation compare each), so
+        // adcs.target keeps tracking the selected station's real rotating
+        // ECI position even between actual handoffs. A station must be
+        // within the satellite's footprint (elevation >=
+        // Config::GROUND_STATION_MIN_ELEVATION_DEG) to be a viable target
+        // at all -- selectClosestGroundStation returns nullptr rather than
+        // falling back to an out-of-view station, in which case
+        // adcs.targetValid goes false and ADCS's own guidance falls back
+        // to sun-relative pointing for TARGET/SLEW/FINE_POINTING/REFLECT
+        // (see ADCS.h's targetValid comment) -- the typical real-ADCS
+        // convention for "this mode's reference isn't available right
+        // now," rather than this harness spoofing `target` itself to point
+        // somewhere else. adcs.target is simply left stale (harmless --
+        // unread while !targetValid) when no station is selected. Only an
+        // actual change of *what's* selected (a different station, or the
+        // Sun fallback engaging/disengaging) clears controller integral
+        // windup -- the position update itself is continuous, not a
+        // discrete retarget the controller needs to react to as one.
+        glm::dvec3 targetEci;
+        const GroundStation *chosenGroundStation = selectClosestGroundStation(
+            orbitState.position, OrbitFrames::gmstRad(currentJdNow),
+            glm::radians(static_cast<double>(Config::GROUND_STATION_MIN_ELEVATION_DEG)), targetEci);
+        adcs.targetValid = (chosenGroundStation != nullptr);
+        if (chosenGroundStation)
+          adcs.target = glm::vec3(targetEci);
+        if (chosenGroundStation != selectedGroundStation)
+        {
+          selectedGroundStation = chosenGroundStation;
+          adcs.resetController(); // clear integral windup from the previous target
+        }
 
-      // =================== FLIGHT SOFTWARE (fast tick) ===================
-      // FlightSoftware::step() is this project's actual firmware main-loop
-      // body: called every tick at Config::FIRMWARE_TICK_S, it pulls sensor
-      // data and pushes actuator commands through fswHal on each task's own
-      // configured rate (see FswSchedule) -- this loop's only job is
-      // driving the tick and reacting to whether an ADCS cycle happened
-      // (step() returns true iff it did), not sampling/applying anything
-      // itself anymore. A HIL adapter would replace fswHal with a class
-      // implementing FlightSoftwareHAL against real hardware -- this loop
-      // and FlightSoftware itself wouldn't change.
-      //
-      // A `while`, not an `if`: at timeScale > 1x, simDt can span more
-      // than one nominal Config::FIRMWARE_TICK_S tick in a single render
-      // frame -- an `if` would silently run the firmware loop at a *slower
-      // relative rate* the faster time is scaled (fewer corrections per
-      // orbit), which would visibly degrade pointing/detumble stability at
-      // high speeds for no physical reason. Catching up with a fixed-size
-      // `while` keeps every task's cadence correct relative to simulated
-      // time regardless of timeScale, the same fixed-step-accumulator
-      // pattern PhysicsWorld::step() already uses internally.
-      fswTickTimer += simDt;
-      while (fswTickTimer > Config::FIRMWARE_TICK_S)
-      {
-        fswTickTimer -= Config::FIRMWARE_TICK_S;
+        // Ambient field at the satellite's real orbital position -- fed to
+        // the magnetorquers (they need it every physics substep to turn a
+        // commanded dipole moment into torque), to ADCS (it needs it to
+        // interpret the magnetometer), and to `sat` itself (its own
+        // sensor-sampling methods need it -- see Cubesat::sampleSensors()).
+        fieldNow = magField.sample(earthRelativePositionNow);
+        for (auto *rod : sat.magnetorquers)
+          rod->ambientFieldWorld = fieldNow;
+        adcs.ambientFieldWorld = fieldNow;
 
-        bool adcsRan = flightSoftware.step(Config::FIRMWARE_TICK_S);
-        if (!adcsRan)
-          continue;
+        glm::vec3 sunDirWorld = adcs.sunPosition - sat.body->position;
+        sat.gravity = gravity;
+        sat.ambientFieldWorld = fieldNow;
+        sat.sunDirWorld = sunDirWorld;
+        sat.inEclipse = inEclipse;
 
-        // =================== EPS (same cadence as the ADCS task) ===================
+        // =================== PHYSICS ===================
+        // Rotational dynamics: integrates the wheel/magnetorquer commands
+        // applied at the end of the *previous* cycle (zero-order hold --
+        // see this loop's own header comment above).
+        world.step(Config::TIME_STEP_S);
+
+        // =================== FLIGHT SOFTWARE ===================
+        // The only place simulated hardware is translated to/from FSW's
+        // plain-data contract -- see Cubesat::sampleSensors()/
+        // applyActuatorCommands() and FlightSoftware.h's own header
+        // comment. FlightSoftware::step() itself never touches `sat`.
+        FSWInputs in = sat.sampleSensors(Config::TIME_STEP_S);
+        FSWOutputs out = flightSoftware.step(in, Config::TIME_STEP_S);
+        sat.applyActuatorCommands(out);
+
+        // =================== EPS ===================
         // Generation: sum every panel's cosine-law output against the same
-        // sun direction the star tracker/sun sensor read against -- zero
-        // while the real orbital position is in Earth's shadow (see
+        // sun direction the star tracker/sun sensor just read against --
+        // zero while the real orbital position is in Earth's shadow (see
         // EclipseModel::inEclipse above), closing this project's former "no
         // orbital eclipse model" gap. Consumption: a fixed housekeeping/
         // sensor draw plus each actuator's idle-plus-effort power for the
-        // commands the ADCS task just issued (read back from fswHal, which
-        // is what actually applied them) -- see the Config::POWER_*
-        // comments for the model each term follows. Net power integrates
-        // straight into the battery.
+        // commands just issued above -- see the Config::POWER_* comments
+        // for the model each term follows. Net power integrates straight
+        // into the battery.
         float genW = 0.0f;
         if (!inEclipse)
           for (const SolarPanel &panel : sat.solarPanels)
@@ -422,10 +413,10 @@ int main()
                       Config::POWER_SUN_SENSOR_W;
         for (int i = 0; i < NUM_WHEELS; i++)
           drawW += Config::WHEEL_IDLE_POWER_W +
-                   std::abs(fswHal.lastWheelTorqueNm[i] * sat.wheels[i]->currentSpeed) / Config::WHEEL_MOTOR_EFFICIENCY;
+                   std::abs(out.wheelCommands[i].torqueNm * sat.wheels[i]->currentSpeed) / Config::WHEEL_MOTOR_EFFICIENCY;
         for (int i = 0; i < NUM_TORQUERS; i++)
           drawW += Config::TORQUER_IDLE_POWER_W +
-                   std::abs(fswHal.lastTorquerMomentAm2[i]) * Config::TORQUER_POWER_PER_AM2_W;
+                   std::abs(out.torquerCommands[i].momentAm2) * Config::TORQUER_POWER_PER_AM2_W;
 
         sat.battery.update(genW - drawW, Config::TIME_STEP_S);
         telemetry.netPowerW.push(genW - drawW);
@@ -439,7 +430,7 @@ int main()
           trueErrQ = -trueErrQ;
         trueErrDeg = glm::degrees(2.0f * std::acos(glm::clamp(trueErrQ.w, -1.0f, 1.0f)));
 
-        // Pushed once per ADCS cycle (a new sensor reading actually
+        // Pushed once per FSW cycle (a new sensor reading actually
         // exists), not once per render frame.
         telemetry.gyroMagDegS.push(glm::degrees(glm::length(adcs.lastGyroBody)));
         telemetry.accelMagMs2.push(glm::length(adcs.lastAccelBody));
@@ -448,9 +439,6 @@ int main()
         telemetry.truePointingErrorDeg.push(trueErrDeg);
         telemetry.batterySocPct.push(sat.battery.stateOfCharge() * 100.0f);
       }
-
-      // =================== PHYSICS ===================
-      world.step(simDt);
     }
 
     // Ground-station pass schedule: refreshed on a real wall-clock timer
