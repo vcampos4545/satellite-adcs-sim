@@ -28,23 +28,27 @@ struct Satellite
   glm::vec3 sunDirWorld{0.0f};
   bool inEclipse = false;
 
-  // The only place simulated hardware is translated to/from the plain
-  // FlightTypes.h contract FlightSoftware::step() actually runs on -- see
-  // FlightSoftware.h's own header comment. Every sensor is sampled once,
-  // at the shared FSW rate `dt`; no per-sensor scheduling.
-  FSWInputs sampleSensors(float dt);
-
-  // Applies FlightSoftware::step()'s output to the simulated wheels/
-  // magnetorquers.
-  void applyActuatorCommands(const FSWOutputs &out);
+  // No sampleSensors()/applyActuatorCommands() here -- FlightSoftware
+  // samples imu/magnetometer/starTracker/sunSensor/wheels/battery
+  // directly, each at its own realistic rate, and commands wheels/
+  // magnetorquers directly too (see FlightSoftware.h's own header
+  // comment). Keeping that independent of this struct is the point: this
+  // sim's hardware objects are just hardware, with no bundled "sample
+  // everything at once" concept of their own, the same way real sensor/
+  // actuator drivers don't know or care what rate flight software polls
+  // them at.
 
   // EPS accounting: solar generation (cosine law, zero in eclipse) minus
-  // housekeeping/sensor draw plus each actuator's idle-plus-effort power
-  // for `out` -- see Config::POWER_* for the model each term follows.
-  // Integrates net power into `battery` and returns it (net watts) for the
-  // caller's own telemetry. Reads `sunDirWorld`/`inEclipse` from this
-  // object's own fields (set by the harness alongside the others above).
-  float updatePower(float dt, const FSWOutputs &out);
+  // housekeeping/sensor draw plus each actuator's idle-plus-effort power,
+  // read directly off wheels[i]->commandedTorque/magnetorquers[i]->
+  // commandedDipoleMoment -- already set by FlightSoftware's own
+  // commandTorque()/commandDipoleMoment() calls this cycle, so this needs
+  // no actuator-command parameter of its own. See Config::POWER_* for the
+  // model each term follows. Integrates net power into `battery` and
+  // returns it (net watts) for the caller's own telemetry. Reads
+  // `sunDirWorld`/`inEclipse` from this object's own fields (set by the
+  // harness alongside the others above).
+  float updatePower(float dt);
 };
 
 // Builds the simulated hardware AND the matching HardwareConfig ADCS::

@@ -11,14 +11,16 @@
 #include "rendering/MagneticFieldRenderer.h"
 #include <vector>
 
-class Fsw;
+class FlightSoftware;
 
 // Everything that defines "the spacecraft and its environment" plus the
 // scene/UI state around it -- the physics world, the spacecraft itself,
 // the Sun/Earth/Moon hierarchy driving orbital mode, camera/textures, and
-// every cached/history quantity the panels and 3D view read. `Fsw` (see
-// Fsw.h) is deliberately kept separate: this class never touches
-// FlightSoftware/ADCS.
+// every cached/history quantity the panels and 3D view read. `FlightSoftware`
+// (see fsw/FlightSoftware.h) is deliberately kept separate: this class
+// never touches FlightSoftware/ADCS itself, only feeds it (see draw()'s
+// own FlightSoftware& parameter, used just for readback -- step() lives
+// on FlightSoftware).
 class Simulation
 {
 public:
@@ -64,8 +66,16 @@ public:
   // internally -- see PhysicsWorld::setOrbitalMode()), and refreshes this
   // object's own cached environment/display quantities from the result.
   // Does not touch ADCS/FlightSoftware/ground-station targeting -- see
-  // Fsw::step(), which runs after this and reads these results.
+  // FlightSoftware::step(), which runs after this and reads these results.
   void step(float dt);
+
+  // Reads this cycle's results back off `fsw` (its public telemetry
+  // fields -- see FlightSoftware.h's own trueErrDeg/netPowerW comments --
+  // plus ADCS's) into `telemetry`'s rolling history for the UI. Called
+  // once per FSW cycle (a new sensor reading actually exists), not once
+  // per render frame; must run after fsw.step(), which is what actually
+  // produces this cycle's values.
+  void updateTelemetry(const FlightSoftware &fsw);
 
   // Wall-clock-timed (not simDt) refresh of the predicted ground-station
   // contact schedule -- called once per render frame regardless of pause
@@ -74,7 +84,7 @@ public:
 
   void handleCameraInput(GUI &gui, const glm::vec2 &mouseDelta, const glm::vec2 &scrollDelta);
 
-  void draw(GUI &gui, Fsw &fsw, int &selectedPassIndex);
+  void draw(GUI &gui, FlightSoftware &fsw, int &selectedPassIndex);
 };
 
 Simulation buildSimulation(); // builds the spacecraft, Sun/Earth/Moon hierarchy, textures, camera

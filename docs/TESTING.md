@@ -49,13 +49,18 @@ What "belongs in `tests/`" looks like, concretely:
   old thresholds may no longer hold even though the underlying law is
   still correct — rerun, look at the real margin, and adjust deliberately
   rather than loosening a threshold until it happens to pass.
-- **Test the plain-data FSW interface** (`FSWInputs -> FSWOutputs`, or
-  `FdirInputs -> PointingMode`), not the simulation harness — this is what
-  `tests/test_common.h`'s `makeTestHardwareConfig()` is for. A test that
-  needs `main.cpp`'s GUI/harness to build is testing the
-  wrong layer; if it's provably true of `fsw` alone, it should be checked
-  against `fsw` alone (see `tests/CMakeLists.txt`'s comment on why FSW
-  tests only need to link `fsw`, not `rigidbody`/`vgl`/`imgui`).
+- **Test `ADCS`'s plain-data interface** (per-sensor readings ->
+  `wheelCommands`/`magnetorquerCommands`, or `FdirInputs -> PointingMode`),
+  not the simulation harness — this is what `tests/test_common.h`'s
+  `makeTestHardwareConfig()` is for. A test that needs `main.cpp`'s
+  GUI/harness to build is testing the wrong layer; if it's provably true
+  of `ADCS`/`FDIR` alone, it should be checked against `fsw` alone with
+  synthetic sensor readings, no `rigidbody`/`vgl`/`imgui` needed (see
+  `test_adcs_control.cpp`/`test_detumble.cpp`/`test_flight_software.cpp`
+  and `tests/CMakeLists.txt`'s comment on why). A test that actually needs
+  `FlightSoftware` (fault injection through real simulated hardware, e.g.
+  `test_fdir.cpp`/`test_eps.cpp`) does need a real `Satellite` +
+  `rigidbody` — see those files' own header comments.
 
 ## What still only gets a manual/GUI check
 

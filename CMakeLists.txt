@@ -69,10 +69,21 @@ target_link_libraries(imgui PUBLIC glfw)
 # fallback when it's blinded/slewing too fast), B-dot detumble, cross-
 # product-law desaturation, and the FDIR mode-manager/fault layer above all
 # of it. Split into its own library (not just object files baked into the
-# main executable) so tests/ can link exactly this and
-# nothing else -- proving, by construction, that FSW logic never needs vgl,
-# imgui, or even `rigidbody` (see ADCS.h/FDIR.h's own "hardware-abstracted"
-# comments; only glm, for plain vector/quaternion math).
+# main executable) so tests/ can link exactly this and nothing else --
+# ADCS.cpp/Controllers.cpp/FDIR.cpp are fully hardware-abstracted (see
+# ADCS.h's own header comment) and need only glm, proven by construction:
+# test_adcs_control/test_detumble/test_flight_software link `fsw` alone.
+#
+# FlightSoftware.cpp is the one file here that isn't hardware-abstracted --
+# it's this project's bridge to a real Satellite (src/core/Satellite.h),
+# sampling sensors/commanding actuators directly (see its own header
+# comment on why that's not a Satellite method) -- so it needs `rigidbody`
+# and src/core's headers (Satellite.h/GroundStations.h/Config.h) too. Any
+# test/ target that actually drives FlightSoftware (not just ADCS) needs to
+# compile src/core/Satellite.cpp (+ GroundStations.cpp) and link rigidbody
+# in turn -- see tests/CMakeLists.txt. Still never needs vgl/imgui: nothing
+# here renders or plots anything -- telemetry-for-the-UI stays the
+# harness's (main.cpp's) job.
 # ---------------------------------------------------------------------------
 add_library(fsw STATIC
   src/fsw/ADCS.cpp
@@ -81,17 +92,22 @@ add_library(fsw STATIC
   src/fsw/FlightSoftware.cpp
 )
 # PUBLIC include dir is src/fsw itself (not all of src) -- fsw's public
-# interface is only its own headers, matching the comment above ("tests/
-# can link exactly this and nothing else"): a consumer of libfsw (tests/,
-# main) sees ADCS.h/FDIR.h/Controllers.h/FlightTypes.h as
-# unprefixed includes, not the rest of this project's source tree.
+# interface is only its own headers: a consumer of libfsw (tests/, main)
+# sees ADCS.h/FDIR.h/Controllers.h/FlightTypes.h/FlightSoftware.h as
+# unprefixed includes, not the rest of this project's source tree. The
+# `src` root is PRIVATE (only FlightSoftware.cpp uses it, to reach
+# src/core/*.h -- e.g. its own #include "core/Satellite.h") since the
+# public headers only forward-declare Satellite/GroundStation, never
+# including their full definitions themselves.
 target_include_directories(fsw PUBLIC src/fsw)
+target_include_directories(fsw PRIVATE src)
 target_link_libraries(fsw PUBLIC glm::glm)
+target_link_libraries(fsw PRIVATE rigidbody)
 
 # ---------------------------------------------------------------------------
-# The satellite: builds the simulated hardware/sensors, samples them into
-# FSWInputs, drives `fsw` each cycle, and applies the FSWOutputs it returns
-# -- see README.md for the full feature list and this project's scope
+# The satellite: builds the simulated hardware/sensors and the scene/UI
+# around them; FlightSoftware (src/fsw/FlightSoftware.h) drives them each
+# cycle -- see README.md for the full feature list and this project's scope
 # relative to spacecraft-dynamics-sim (the engine) and constellation-sim
 # (orbit-level mission design).
 # ---------------------------------------------------------------------------
@@ -99,7 +115,6 @@ add_executable(main
   src/core/main.cpp
   src/core/Satellite.cpp
   src/core/Simulation.cpp
-  src/core/Fsw.cpp
   src/core/GroundStations.cpp
   src/core/SolarFarms.cpp
   src/rendering/SatelliteRenderer.cpp

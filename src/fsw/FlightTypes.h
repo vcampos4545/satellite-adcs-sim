@@ -3,13 +3,16 @@
 #include <glm/gtc/quaternion.hpp>
 #include <array>
 
-// Plain-data contract between ADCS (flight software) and whatever is
-// driving it -- this simulation today, a HIL rig reading real ADC/I2C
-// values later, real flight hardware eventually. No rigidbody/* includes
-// here on purpose: this header, and everything ADCS.h/.cpp builds on top
-// of it, must never know a RigidBody or PhysicsWorld exists. The
-// simulation harness (main.cpp) is the only place that
-// bridges between this and the actual simulation objects.
+// Plain-data types ADCS (flight software) is built on -- individual sensor
+// readings and actuator config, not a bundled per-cycle snapshot: each
+// sensor is sampled independently, at its own realistic rate, by
+// FlightSoftware (see its own header comment), so there's no single
+// instant at which "all sensor data for this cycle" exists together the
+// way a bundled struct would imply. No rigidbody/* includes here on
+// purpose: this header, and everything ADCS.h/.cpp builds on top of it,
+// must never know a RigidBody or PhysicsWorld exists. The simulation
+// harness (main.cpp/FlightSoftware.cpp) is the only place that bridges
+// between this and the actual simulation objects.
 //
 // Fixed sizes rather than runtime-sized containers, matching the actual
 // hardware config (a 4-wheel pyramid, 3 orthogonal magnetorquers) -- a
@@ -68,9 +71,13 @@ struct HardwareConfig
 };
 
 // ---------------------------------------------------------------------------
-// Sensor inputs -- one snapshot per ADCS cycle. Every "valid" flag models a
-// real, routine failure mode (blinded, out of range, no lock) that flight
-// software has to run through, not an edge case to ignore.
+// Sensor readings. Every "valid" flag models a real, routine condition
+// flight software has to run through, not an edge case to ignore: a
+// physical failure mode (blinded, out of range, no lock) for the
+// attitude/sun sensors, or simply "no fresh reading yet" for a sensor
+// FlightSoftware samples slower than the ADCS cycle (see its own header
+// comment) -- ADCS treats both the same way, coasting on its last estimate
+// rather than requiring a value.
 // ---------------------------------------------------------------------------
 struct ImuSample
 {
@@ -110,43 +117,4 @@ struct PowerSample
 {
   float batterySoc = 1.0f;      // 0-1, state of charge
   float batteryVoltageV = 0.0f; // V
-};
-
-struct FSWInputs
-{
-  ImuSample imu;
-  MagSample mag;
-  StarTrackerSample star;
-  SunSensorSample sunSensor;
-  PowerSample power;
-  std::array<WheelTelemetry, NUM_WHEELS> wheelTelemetry{};
-
-  // Stands in for a real navigation solution (GPS/ephemeris) -- needed by
-  // NADIR/TARGET/SUN_POINTING/REFLECT guidance to compute a pointing
-  // direction relative to the spacecraft's own position. This sim's
-  // harness feeds it the real orbital position (ECI, meters, Earth's
-  // center at the origin -- see main.cpp's OrbitState/
-  // OrbitPropagator), the same way a real flight computer's guidance
-  // would read its own navigation solution.
-  glm::vec3 spacecraftPositionWorld{0.0f};
-};
-
-// ---------------------------------------------------------------------------
-// Actuator commands -- ADCS's output each cycle. The harness (or, later, a
-// HIL adapter) is responsible for actually applying these to hardware.
-// ---------------------------------------------------------------------------
-struct WheelCommand
-{
-  float torqueNm = 0.0f;
-};
-
-struct TorquerCommand
-{
-  float momentAm2 = 0.0f;
-};
-
-struct FSWOutputs
-{
-  std::array<WheelCommand, NUM_WHEELS> wheelCommands{};
-  std::array<TorquerCommand, NUM_TORQUERS> torquerCommands{};
 };

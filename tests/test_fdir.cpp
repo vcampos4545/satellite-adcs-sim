@@ -3,135 +3,116 @@
 // fault model these are checking. Drives FlightSoftware (not a bare ADCS)
 // since fault-driven mode override is FlightSoftware::step()'s job now that
 // FDIR is a peer of ADCS rather than nested inside it.
+//
+// FlightSoftware::step() samples sensors/applies actuator commands itself,
+// against a real Satellite (see FlightSoftware.h's own header comment on
+// why that's not a Satellite method) -- so faults are injected by
+// manipulating the simulated hardware directly (a wheel's own
+// healthFactor, the body's own angularVelocity) rather than by
+// constructing synthetic per-sensor readings the way test_adcs_control.cpp/
+// test_detumble.cpp do against bare ADCS.
 #include "test_common.h"
 #include "FlightSoftware.h"
+#include "core/Satellite.h"
+#include <rigidbody/PhysicsWorld.h>
+
+namespace
+{
+constexpr float DT = 0.05f;
+
+// One representative environment for every scenario below -- FDIR doesn't
+// care about guidance geometry/ground-station targeting, only about the
+// fault-relevant signals (wheel health, rate, attitude uncertainty,
+// battery), so these values are arbitrary but fixed. Sun held well away
+// from the star tracker's default -Z boresight so it isn't blinded outside
+// the excess-rate scenario (which blinds it anyway by exceeding its own
+// max slew rate -- a real, and realistic, side effect of that fault).
+void stepOnce(FlightSoftware &fsw)
+{
+  fsw.step(DT, glm::dvec3(0.0, 0.0, 7.0e6), 2451545.0,
+           glm::vec3(1.5e11f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 3e-5f), false);
+}
+
+// Bundles a PhysicsWorld + real Satellite (buildSatellite()'s actual
+// flight-hardware geometry) + FlightSoftware configured against it -- the
+// minimum needed to drive FlightSoftware::step(), which owns sensor
+// sampling/actuator commanding via a real Satellite.
+struct TestRig
+{
+  PhysicsWorld world;
+  HardwareConfig hw;
+  Satellite sat;
+  FlightSoftware fsw;
+
+  TestRig() : sat(buildSatellite(world, hw)), fsw(sat)
+  {
+    fsw.configure(hw, glm::quat(1, 0, 0, 0));
+  }
+};
+} // namespace
 
 int main()
 {
   // Healthy system stays NOMINAL; commanded mode passes through untouched.
   {
-    FlightSoftware fsw;
-    ADCS &adcs = fsw.adcs;
-    HardwareConfig hw = makeTestHardwareConfig();
-    glm::quat trueAtt(1, 0, 0, 0);
-    fsw.configure(hw, trueAtt);
+    TestRig rig;
+    ADCS &adcs = rig.fsw.adcs;
     adcs.mode = PointingMode::TARGET;
-    adcs.target = glm::vec3(0, 0, 5.0f);
-    adcs.ambientFieldWorld = glm::vec3(0, 0, 3e-5f);
-    float dt = 0.05f;
     for (int i = 0; i < 100; i++)
-    {
-      FSWInputs in;
-      in.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
-      in.mag = {glm::vec3(0, 0, 3e-5f), true};
-      in.star = {trueAtt, true};
-      in.power = {1.0f, 8.4f};
-      in.spacecraftPositionWorld = glm::vec3(0.0f);
-      for (int w = 0; w < NUM_WHEELS; w++)
-        in.wheelTelemetry[w] = {0.0f, true};
-      fsw.step(in, dt);
-    }
-    CHECK(fsw.fdir.state() == FdirState::NOMINAL && adcs.effectiveMode == PointingMode::TARGET &&
-              fsw.systemMode() == SystemMode::NOMINAL,
+      stepOnce(rig.fsw);
+    CHECK(rig.fsw.fdir.state() == FdirState::NOMINAL && adcs.effectiveMode == PointingMode::TARGET &&
+              rig.fsw.systemMode() == SystemMode::NOMINAL,
           "Healthy system stays NOMINAL, effectiveMode == commanded TARGET, systemMode == NOMINAL");
   }
 
   // Losing 2 of 4 wheels (below minHealthyWheels) trips SAFE_HOLD and
   // overrides to SUN_POINTING, without touching the commanded mode.
   {
-    FlightSoftware fsw;
-    ADCS &adcs = fsw.adcs;
-    HardwareConfig hw = makeTestHardwareConfig();
-    glm::quat trueAtt(1, 0, 0, 0);
-    fsw.configure(hw, trueAtt);
+    TestRig rig;
+    ADCS &adcs = rig.fsw.adcs;
     adcs.mode = PointingMode::TARGET;
-    adcs.target = glm::vec3(0, 0, 5.0f);
-    adcs.sunPosition = glm::vec3(3.0f, 0.0f, 0.0f);
-    adcs.ambientFieldWorld = glm::vec3(0, 0, 3e-5f);
-    float dt = 0.05f;
+    rig.sat.wheels[2]->healthFactor = 0.0f;
+    rig.sat.wheels[3]->healthFactor = 0.0f;
     for (int i = 0; i < 100; i++)
-    {
-      FSWInputs in;
-      in.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
-      in.mag = {glm::vec3(0, 0, 3e-5f), true};
-      in.star = {trueAtt, true};
-      in.power = {1.0f, 8.4f};
-      in.spacecraftPositionWorld = glm::vec3(0.0f);
-      in.wheelTelemetry[0] = {0.0f, true};
-      in.wheelTelemetry[1] = {0.0f, true};
-      in.wheelTelemetry[2] = {0.0f, false};
-      in.wheelTelemetry[3] = {0.0f, false};
-      fsw.step(in, dt);
-    }
-    CHECK(fsw.fdir.state() == FdirState::SAFE_HOLD &&
-              (fsw.fdir.activeFaults() & FDIR_FAULT_WHEEL_AUTHORITY_LOST) &&
+      stepOnce(rig.fsw);
+    CHECK(rig.fsw.fdir.state() == FdirState::SAFE_HOLD &&
+              (rig.fsw.fdir.activeFaults() & FDIR_FAULT_WHEEL_AUTHORITY_LOST) &&
               adcs.mode == PointingMode::TARGET &&
               adcs.effectiveMode == PointingMode::SUN_POINTING &&
-              fsw.systemMode() == SystemMode::SAFE,
+              rig.fsw.systemMode() == SystemMode::SAFE,
           "2 dead wheels -> SAFE_HOLD, commanded stays TARGET, effectiveMode -> SUN_POINTING, systemMode == SAFE");
 
-    fsw.fdir.clearLatchedFaults();
-    CHECK(fsw.fdir.state() == FdirState::NOMINAL && fsw.systemMode() == SystemMode::NOMINAL,
+    rig.fsw.fdir.clearLatchedFaults();
+    CHECK(rig.fsw.fdir.state() == FdirState::NOMINAL && rig.fsw.systemMode() == SystemMode::NOMINAL,
           "clearLatchedFaults() immediately returns to NOMINAL");
   }
 
   // Excess rate wins over other faults and forces DETUMBLE.
   {
-    FlightSoftware fsw;
-    ADCS &adcs = fsw.adcs;
-    HardwareConfig hw = makeTestHardwareConfig();
-    glm::quat trueAtt(1, 0, 0, 0);
-    fsw.configure(hw, trueAtt);
+    TestRig rig;
+    ADCS &adcs = rig.fsw.adcs;
     adcs.mode = PointingMode::TARGET;
-    adcs.target = glm::vec3(0, 0, 5.0f);
-    adcs.ambientFieldWorld = glm::vec3(0, 0, 3e-5f);
-    float dt = 0.05f;
-    glm::vec3 highRate(3.0f, 0.0f, 0.0f); // above excessRateRadS default (2.0)
+    rig.sat.body->angularVelocity = glm::vec3(3.0f, 0.0f, 0.0f); // above excessRateRadS default (2.0)
     for (int i = 0; i < 10; i++)
-    {
-      FSWInputs in;
-      in.imu = {highRate, glm::vec3(0.0f)};
-      in.mag = {glm::vec3(0, 0, 3e-5f), true};
-      in.star = {trueAtt, true};
-      in.power = {1.0f, 8.4f};
-      in.spacecraftPositionWorld = glm::vec3(0.0f);
-      for (int w = 0; w < NUM_WHEELS; w++)
-        in.wheelTelemetry[w] = {0.0f, true};
-      fsw.step(in, dt);
-    }
-    CHECK(adcs.effectiveMode == PointingMode::DETUMBLE && fsw.systemMode() == SystemMode::SAFE,
+      stepOnce(rig.fsw);
+    CHECK(adcs.effectiveMode == PointingMode::DETUMBLE && rig.fsw.systemMode() == SystemMode::SAFE,
           "Excess rate -> effectiveMode forced to DETUMBLE, systemMode == SAFE");
   }
 
   // Autonomy disabled: fault still detected/latched but never overrides
   // effectiveMode -- the ground-inhibit switch actually inhibits.
   {
-    FlightSoftware fsw;
-    ADCS &adcs = fsw.adcs;
-    HardwareConfig hw = makeTestHardwareConfig();
-    glm::quat trueAtt(1, 0, 0, 0);
-    fsw.configure(hw, trueAtt);
+    TestRig rig;
+    ADCS &adcs = rig.fsw.adcs;
     adcs.mode = PointingMode::TARGET;
-    adcs.target = glm::vec3(0, 0, 5.0f);
-    adcs.ambientFieldWorld = glm::vec3(0, 0, 3e-5f);
-    fsw.fdir.enabled = false;
-    float dt = 0.05f;
+    rig.fsw.fdir.enabled = false;
+    rig.sat.wheels[0]->healthFactor = 0.0f;
+    rig.sat.wheels[1]->healthFactor = 0.0f;
+    rig.sat.wheels[2]->healthFactor = 0.0f;
     for (int i = 0; i < 100; i++)
-    {
-      FSWInputs in;
-      in.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
-      in.mag = {glm::vec3(0, 0, 3e-5f), true};
-      in.star = {trueAtt, true};
-      in.power = {1.0f, 8.4f};
-      in.spacecraftPositionWorld = glm::vec3(0.0f);
-      in.wheelTelemetry[0] = {0.0f, false};
-      in.wheelTelemetry[1] = {0.0f, false};
-      in.wheelTelemetry[2] = {0.0f, false};
-      in.wheelTelemetry[3] = {0.0f, true};
-      fsw.step(in, dt);
-    }
-    CHECK((fsw.fdir.activeFaults() & FDIR_FAULT_WHEEL_AUTHORITY_LOST) && adcs.effectiveMode == PointingMode::TARGET &&
-              fsw.systemMode() == SystemMode::NOMINAL,
+      stepOnce(rig.fsw);
+    CHECK((rig.fsw.fdir.activeFaults() & FDIR_FAULT_WHEEL_AUTHORITY_LOST) && adcs.effectiveMode == PointingMode::TARGET &&
+              rig.fsw.systemMode() == SystemMode::NOMINAL,
           "Autonomy disabled: fault still latched but effectiveMode/systemMode unchanged");
   }
 

@@ -4,7 +4,7 @@
 // (not test_adcs_control.cpp) since it's the other FlightSoftware-era
 // behavior change from the same refactor.
 #include "test_common.h"
-#include "FlightSoftware.h"
+#include "ADCS.h"
 #include <cmath>
 
 namespace
@@ -22,16 +22,16 @@ glm::vec3 achievedDirFor(PointingMode mode, bool targetValid, glm::vec3 spacecra
   adcs.sunPosition = sunPos;
   adcs.targetValid = targetValid;
 
-  FSWInputs in;
-  in.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
-  in.mag = {glm::vec3(0, 0, 3e-5f), true};
-  in.star = {glm::quat(1, 0, 0, 0), true};
-  in.power = {1.0f, 8.4f};
-  in.spacecraftPositionWorld = spacecraftPos;
+  ImuSample imu{glm::vec3(0.0f), glm::vec3(0.0f)};
+  MagSample mag{glm::vec3(0, 0, 3e-5f), true};
+  StarTrackerSample star{glm::quat(1, 0, 0, 0), true};
+  SunSensorSample sunSensor;
+  PowerSample power{1.0f, 8.4f};
+  std::array<WheelTelemetry, NUM_WHEELS> wheelTelemetry{};
   for (int w = 0; w < NUM_WHEELS; w++)
-    in.wheelTelemetry[w] = {0.0f, true};
+    wheelTelemetry[w] = {0.0f, true};
 
-  adcs.step(in, 0.05f);
+  adcs.step(imu, mag, star, sunSensor, power, wheelTelemetry, spacecraftPos, 0.05f);
   return adcs.targetAttitude * glm::vec3(0, 0, 1);
 }
 

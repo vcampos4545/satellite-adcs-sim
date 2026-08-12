@@ -2,7 +2,7 @@
 #include "ImGuiLayer.h"
 #include "Config.h"
 #include "Simulation.h"
-#include "Fsw.h"
+#include "fsw/FlightSoftware.h"
 #include <cstdio>
 
 // ---------------------------------------------------------------------------
@@ -22,7 +22,8 @@ int main()
   gui.setAmbientLight(Config::SCENE_AMBIENT_LIGHT);
 
   Simulation sim = buildSimulation();
-  Fsw fsw(sim);
+  FlightSoftware fsw(sim.spacecraft);
+  fsw.configure(sim.hwConfig, sim.spacecraft.body->orientation);
 
   glm::vec2 lastMousePos = gui.getMousePosition();
   int selectedPassIndex = -1; // Ground Stations tab's selected table row -- transient UI state, not simulation state
@@ -40,25 +41,21 @@ int main()
     lastMousePos = mousePos;
     glm::vec2 scrollDelta = gui.getScrollDelta();
 
-    // One fixed-rate loop drives sim.step() (orbit propagation +
-    // PhysicsWorld::step(), zero-order hold against the previous cycle's
-    // actuator commands) and one fsw.step() cycle together. A `while`,
-    // not an `if`: a slow render frame can span more than one nominal
-    // Config::TIME_STEP_S cycle -- an `if` would silently run everything
-    // at a slower relative rate, degrading pointing/detumble stability
-    // for no physical reason.
+    // Update
     fswTimer += dt;
     while (fswTimer > Config::TIME_STEP_S)
     {
       fswTimer -= Config::TIME_STEP_S;
       sim.step(Config::TIME_STEP_S);
-      fsw.step(Config::TIME_STEP_S);
+      fsw.step(Config::TIME_STEP_S, sim.world.orbitalState(sim.spacecraft.body).position,
+               sim.currentJdNow, sim.sunPositionNow, sim.fieldNow, sim.inEclipse);
+      sim.updateTelemetry(fsw);
     }
 
     sim.handleCameraInput(gui, mouseDelta, scrollDelta);
-
     sim.refreshGroundStationPasses(dt);
 
+    // Draw
     gui.beginFrame();
     imguiLayer.beginFrame();
     sim.draw(gui, fsw, selectedPassIndex);

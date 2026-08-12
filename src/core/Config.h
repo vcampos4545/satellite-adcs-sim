@@ -53,6 +53,18 @@ namespace Config
   // fixed-step accumulator).
   constexpr float TIME_STEP_S = 0.05f;
 
+  // Per-sensor sample periods -- FlightSoftware::step() samples each
+  // sensor independently at its own realistic firmware rate rather than
+  // synchronized to the FSW cycle above (see its own header comment).
+  // IMU/magnetometer/wheel telemetry aren't listed here: real MEMS
+  // gyros/accelerometers, magnetometers, and motor-controller telemetry
+  // all comfortably exceed this loop's 20 Hz on their own, so sampling
+  // them fresh every cycle already matches real hardware; only the
+  // genuinely slower sensors below need their own throttled schedule.
+  constexpr float STAR_TRACKER_SAMPLE_PERIOD_S = 0.2f; // 5 Hz -- image-processing-based attitude solve
+  constexpr float SUN_SENSOR_SAMPLE_PERIOD_S = 0.1f;   // 10 Hz -- coarse analog sensor polled over a bus
+  constexpr float POWER_SAMPLE_PERIOD_S = 1.0f;        // 1 Hz -- typical I2C fuel-gauge IC polling rate
+
   constexpr int TELEMETRY_HISTORY_SAMPLES = 300;
 
   // Satellite

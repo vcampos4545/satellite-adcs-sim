@@ -1,5 +1,5 @@
 #include "Simulation.h"
-#include "Fsw.h"
+#include "fsw/FlightSoftware.h"
 #include "Config.h"
 #include "rendering/SatelliteRenderer.h"
 #include "rendering/OrbitRenderer.h"
@@ -127,6 +127,18 @@ void Simulation::step(float dt)
   }
 }
 
+void Simulation::updateTelemetry(const FlightSoftware &fsw)
+{
+  const ADCS &adcs = fsw.adcs;
+  telemetry.netPowerW.push(fsw.netPowerW);
+  telemetry.gyroMagDegS.push(glm::degrees(glm::length(adcs.lastGyroBody)));
+  telemetry.accelMagMs2.push(glm::length(adcs.lastAccelBody));
+  telemetry.magFieldMagUt.push(glm::length(adcs.magFieldBody) * 1e6f);
+  telemetry.estimatedPointingErrorDeg.push(adcs.estimatedPointingErrorDeg);
+  telemetry.truePointingErrorDeg.push(fsw.trueErrDeg);
+  telemetry.batterySocPct.push(spacecraft.battery.stateOfCharge() * 100.0f);
+}
+
 void Simulation::refreshGroundStationPasses(float realDt)
 {
   groundStationPassRefreshTimer += realDt;
@@ -148,9 +160,9 @@ void Simulation::handleCameraInput(GUI &gui, const glm::vec2 &mouseDelta, const 
   camera.applyToCamera(gui.camera);
 }
 
-void Simulation::draw(GUI &gui, Fsw &fsw, int &selectedPassIndex)
+void Simulation::draw(GUI &gui, FlightSoftware &fsw, int &selectedPassIndex)
 {
-  ADCS &adcs = fsw.flightSoftware.adcs;
+  ADCS &adcs = fsw.adcs;
 
   // VGL's directional light has no idea where the real Sun is unless told
   // every frame -- see the direction-vs-position distinction this project
@@ -208,7 +220,7 @@ void Simulation::draw(GUI &gui, Fsw &fsw, int &selectedPassIndex)
   if (vis.showWorldAxesGizmo)
     drawWorldAxesGizmo(gui);
 
-  drawADCSPanel(fsw.flightSoftware, spacecraft, telemetry, simControls, epoch, vis,
+  drawADCSPanel(fsw, spacecraft, telemetry, simControls, epoch, vis,
                 world.orbitalState(spacecraft.body), earthTexture, groundTrackLatLonDeg, currentJdNow,
                 groundStationPasses, selectedPassIndex, fsw.trueErrDeg, inEclipse);
 }

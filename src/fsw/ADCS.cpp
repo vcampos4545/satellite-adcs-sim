@@ -182,23 +182,25 @@ void ADCS::retuneForMode()
   resetController(); // discard integral windup/state accumulated under the old tuning
 }
 
-void ADCS::updateEstimator(const FSWInputs &in, float dt)
+void ADCS::updateEstimator(const ImuSample &imu, const MagSample &mag, const StarTrackerSample &star,
+                           const SunSensorSample &sunSensor, const PowerSample &power,
+                           const glm::vec3 &spacecraftPositionWorld, float dt)
 {
-  lastGyroBody = in.imu.gyro;
-  lastAccelBody = in.imu.accel;
-  batterySoc = in.power.batterySoc;
-  batteryVoltageV = in.power.batteryVoltageV;
+  lastGyroBody = imu.gyro;
+  lastAccelBody = imu.accel;
+  batterySoc = power.batterySoc;
+  batteryVoltageV = power.batteryVoltageV;
 
   // EKF predict: propagates estimatedAttitude via bias-corrected strapdown
   // integration and grows the covariance -- see propagateEstimator().
-  propagateEstimator(in.imu.gyro, dt);
+  propagateEstimator(imu.gyro, dt);
 
   // Magnetometer: feeds both the B-dot law and (below) the TRIAD fallback
   // correction. Finite-differenced the same way a real accelerometer-from-
   // velocity derivation would be, across consecutive valid samples.
-  if (in.mag.valid)
+  if (mag.valid)
   {
-    magFieldBody = in.mag.fieldBody;
+    magFieldBody = mag.fieldBody;
     if (hasPrevMagField && dt > 1e-6f)
       magFieldRateBody = (magFieldBody - prevMagFieldBody) / dt;
     prevMagFieldBody = magFieldBody;
@@ -206,27 +208,29 @@ void ADCS::updateEstimator(const FSWInputs &in, float dt)
   }
 
   // EKF correct: prefer the star tracker; fall back to the coarser TRIAD
-  // solve when it's unavailable (sun-blinded, slewing too fast). If
-  // neither is available this cycle, the estimate just keeps coasting on
-  // the propagation above and covariance keeps growing -- exactly what a
-  // real system does through a dropout.
-  starTrackerValid = in.star.valid;
+  // solve when it's unavailable (sun-blinded, slewing too fast, or simply
+  // no fresh frame yet at its own slower sample rate -- see
+  // FlightSoftware.h's header comment). If neither is available this
+  // cycle, the estimate just keeps coasting on the propagation above and
+  // covariance keeps growing -- exactly what a real system does through a
+  // dropout.
+  starTrackerValid = star.valid;
   triadFallbackUsed = false;
 
-  if (in.star.valid)
+  if (star.valid)
   {
     // Star tracker noise spec would normally be a configured constant too
     // (see sunSensorNoiseRad); using the same ~10 arcsec figure the
     // simulated StarTracker defaults to, since this project doesn't yet
     // have a reason to make it independently configurable.
     constexpr float starTrackerNoiseRad = 10.0f / 3600.0f * 3.14159265f / 180.0f;
-    correctEstimator(in.star.attitudeWorld, starTrackerNoiseRad * starTrackerNoiseRad);
+    correctEstimator(star.attitudeWorld, starTrackerNoiseRad * starTrackerNoiseRad);
   }
   else
   {
     glm::quat triadMeas;
     float triadR;
-    if (computeTriadFallback(in, triadMeas, triadR))
+    if (computeTriadFallback(mag, sunSensor, spacecraftPositionWorld, triadMeas, triadR))
     {
       correctEstimator(triadMeas, triadR);
       triadFallbackUsed = true;
@@ -240,7 +244,7 @@ void ADCS::updateEstimator(const FSWInputs &in, float dt)
   // FDIR::evaluate() the same cycle -- FlightSoftware::step() calls that
   // between updateEstimator() and control(), reading `mode` as its own
   // commandedMode input.
-  checkAutoDetumbleEntry(in.imu.gyro - gyroBiasEstimate);
+  checkAutoDetumbleEntry(imu.gyro - gyroBiasEstimate);
 }
 
 void ADCS::checkAutoDetumbleEntry(const glm::vec3 &rateBody)
@@ -270,17 +274,19 @@ void ADCS::checkAutoDetumbleEntry(const glm::vec3 &rateBody)
   }
 }
 
-FSWOutputs ADCS::control(const FSWInputs &in, float dt)
+void ADCS::control(const std::array<WheelTelemetry, NUM_WHEELS> &wheelTelemetry,
+                   const glm::vec3 &spacecraftPositionWorld, float dt)
 {
   // Rate feedback to the attitude controller: bias-corrected, same as
-  // updateEstimator()'s own propagation. A rate loop fed the raw (still-
-  // biased) gyro settles at a true rate equal to minus that bias -- using
-  // the EKF's own bias estimate here, not just for attitude propagation,
-  // is what actually fixes that instead of only bounding its effect.
-  // Recomputed here (not passed through) since gyroBiasEstimate hasn't
-  // changed since updateEstimator() ran this same cycle -- cheap, and
-  // avoids adding state just to shuttle one vector between two calls.
-  glm::vec3 rate = in.imu.gyro - gyroBiasEstimate;
+  // updateEstimator()'s own propagation. Recomputed here (not passed
+  // through) from lastGyroBody/gyroBiasEstimate, both already set by
+  // updateEstimator() this same cycle -- cheap, and avoids adding state
+  // just to shuttle one vector between two calls. A rate loop fed the raw
+  // (still-biased) gyro settles at a true rate equal to minus that bias --
+  // using the EKF's own bias estimate here, not just for attitude
+  // propagation, is what actually fixes that instead of only bounding its
+  // effect.
+  glm::vec3 rate = lastGyroBody - gyroBiasEstimate;
 
   // `effectiveMode` is assumed already resolved by the caller before this
   // runs -- FlightSoftware::step() sets it from FDIR (a peer module, not
@@ -296,11 +302,12 @@ FSWOutputs ADCS::control(const FSWInputs &in, float dt)
   if (manualOverride)
   {
     // Bypass guidance/control/allocation entirely -- a UI panel commanding
-    // hardware directly, same clamping semantics the normal path would
-    // apply, just skipping the autonomous loop.
+    // hardware directly; the caller's own commandTorque()/
+    // commandDipoleMoment() calls clamp to hardware limits on the way in,
+    // same as the autonomous path below.
     wheelCommands = manualWheelTorqueNm;
     magnetorquerCommands = manualMagnetorquerMomentAm2;
-    return buildOutputs();
+    return;
   }
 
   if (effectiveMode == PointingMode::DETUMBLE)
@@ -316,7 +323,7 @@ FSWOutputs ADCS::control(const FSWInputs &in, float dt)
       {
         const WheelConfig &wc = hw_.wheels[i];
         if (wc.maxSpeedRadS > 1e-9f)
-          maxWheelSat = std::max(maxWheelSat, std::abs(in.wheelTelemetry[i].speedRadS / wc.maxSpeedRadS));
+          maxWheelSat = std::max(maxWheelSat, std::abs(wheelTelemetry[i].speedRadS / wc.maxSpeedRadS));
       }
       activeDetumbleActuator = (maxWheelSat < detumbleWheelSaturationBudget)
                                    ? DetumbleActuator::REACTION_WHEELS
@@ -328,18 +335,20 @@ FSWOutputs ADCS::control(const FSWInputs &in, float dt)
     }
   }
 
-  computeGuidance(in.spacecraftPositionWorld, dt);
+  computeGuidance(spacecraftPositionWorld, dt);
   computeControl(estimatedAttitude, rate, dt);
-  updateDesaturation(in);
+  updateDesaturation(wheelTelemetry);
   allocateActuators();
-  return buildOutputs();
 }
 
-FSWOutputs ADCS::step(const FSWInputs &in, float dt)
+void ADCS::step(const ImuSample &imu, const MagSample &mag, const StarTrackerSample &star,
+                const SunSensorSample &sunSensor, const PowerSample &power,
+                const std::array<WheelTelemetry, NUM_WHEELS> &wheelTelemetry,
+                const glm::vec3 &spacecraftPositionWorld, float dt)
 {
-  updateEstimator(in, dt);
+  updateEstimator(imu, mag, star, sunSensor, power, spacecraftPositionWorld, dt);
   effectiveMode = mode; // no fault monitor at this layer; see FlightSoftware::step() for the fault-aware entry point
-  return control(in, dt);
+  control(wheelTelemetry, spacecraftPositionWorld, dt);
 }
 
 void ADCS::computeGuidance(const glm::vec3 &spacecraftPositionWorld, float dt)
@@ -483,7 +492,7 @@ glm::vec3 ADCS::computeBdotDipoleCommand() const
   return -bdotGain * magFieldRateBody;
 }
 
-void ADCS::updateDesaturation(const FSWInputs &in)
+void ADCS::updateDesaturation(const std::array<WheelTelemetry, NUM_WHEELS> &wheelTelemetry)
 {
   desatDipoleCommandBody = glm::vec3(0.0f);
 
@@ -500,7 +509,7 @@ void ADCS::updateDesaturation(const FSWInputs &in)
   for (int i = 0; i < NUM_WHEELS; i++)
   {
     const WheelConfig &wc = hw_.wheels[i];
-    float speed = in.wheelTelemetry[i].speedRadS;
+    float speed = wheelTelemetry[i].speedRadS;
     wheelMomentumBody += wc.wheelInertia * speed * wc.spinAxisBody;
     if (wc.maxSpeedRadS > 1e-9f)
       maxWheelSat = std::max(maxWheelSat, std::abs(speed / wc.maxSpeedRadS));
@@ -596,22 +605,6 @@ void ADCS::allocateActuators()
   magnetorquerCommands = allocateViaPseudoinverse<NUM_TORQUERS>(bdotDipoleCommandBody + desatDipoleCommandBody, torquerAxes);
 }
 
-FSWOutputs ADCS::buildOutputs() const
-{
-  FSWOutputs out;
-  for (int i = 0; i < NUM_WHEELS; i++)
-  {
-    float t = glm::clamp(wheelCommands[i], -hw_.wheels[i].maxTorqueNm, hw_.wheels[i].maxTorqueNm);
-    out.wheelCommands[i] = {t};
-  }
-  for (int i = 0; i < NUM_TORQUERS; i++)
-  {
-    float m = glm::clamp(magnetorquerCommands[i], -hw_.torquers[i].maxMomentAm2, hw_.torquers[i].maxMomentAm2);
-    out.torquerCommands[i] = {m};
-  }
-  return out;
-}
-
 glm::quat ADCS::computeTriadAttitude(const glm::vec3 &primaryBody, const glm::vec3 &primaryRef,
                                      const glm::vec3 &secondaryBody, const glm::vec3 &secondaryRef)
 {
@@ -697,14 +690,16 @@ void ADCS::correctEstimator(const glm::quat &qMeas, float R)
   covBB = newBB;
 }
 
-bool ADCS::computeTriadFallback(const FSWInputs &in, glm::quat &outAttitude, float &outR) const
+bool ADCS::computeTriadFallback(const MagSample &mag, const SunSensorSample &sunSensor,
+                                const glm::vec3 &spacecraftPositionWorld,
+                                glm::quat &outAttitude, float &outR) const
 {
-  if (!in.mag.valid || glm::length(in.mag.fieldBody) < 1e-12f || glm::length(ambientFieldWorld) < 1e-9f)
+  if (!mag.valid || glm::length(mag.fieldBody) < 1e-12f || glm::length(ambientFieldWorld) < 1e-9f)
     return false;
-  if (!in.sunSensor.valid)
+  if (!sunSensor.valid)
     return false;
 
-  glm::vec3 sunDirRef = sunPosition - in.spacecraftPositionWorld;
+  glm::vec3 sunDirRef = sunPosition - spacecraftPositionWorld;
   if (glm::length(sunDirRef) < 1e-6f)
     return false; // no sun position configured -- can't form the second vector
   sunDirRef = glm::normalize(sunDirRef);
@@ -716,7 +711,7 @@ bool ADCS::computeTriadFallback(const FSWInputs &in, glm::quat &outAttitude, flo
   if (glm::length(glm::cross(fieldDirRef, sunDirRef)) < 0.1f)
     return false;
 
-  outAttitude = computeTriadAttitude(in.mag.fieldBody, ambientFieldWorld, in.sunSensor.sunDirBody, sunDirRef);
+  outAttitude = computeTriadAttitude(mag.fieldBody, ambientFieldWorld, sunSensor.sunDirBody, sunDirRef);
   // Dominated by the coarse sun sensor's noise (the magnetometer is
   // comparatively accurate here) -- an approximation, not a rigorous
   // propagation of both sensors' noise through the TRIAD solve.

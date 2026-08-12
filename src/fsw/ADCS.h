@@ -34,11 +34,14 @@ enum class DetumbleActuator
 //
 // Hardware-abstracted by design: this class never references RigidBody,
 // PhysicsWorld, or any sensor/actuator simulation type (see FlightTypes.h)
-// -- configure() takes a plain HardwareConfig, step() takes plain
-// FSWInputs and returns plain FSWOutputs. Whatever drives it (this
-// simulation's harness today, a HIL rig or real flight hardware later)
-// owns all sensor sampling and actuator command application; this class
-// only ever sees data, never simulation objects.
+// -- configure() takes a plain HardwareConfig, updateEstimator()/control()/
+// step() take plain per-sensor readings and leave commanded actuator
+// values in wheelCommands/magnetorquerCommands for the caller to apply.
+// Whatever drives it (this simulation's FlightSoftware today, sampling
+// each sensor independently at its own realistic rate -- see
+// FlightSoftware.h's own header comment -- a HIL rig or real flight
+// hardware later) owns all sensor sampling and actuator command
+// application; this class only ever sees data, never simulation objects.
 class ADCS
 {
 public:
@@ -97,8 +100,15 @@ public:
   float estimatedPointingErrorDeg = 0.0f;
 
   glm::vec3 torqueCommand;
-  std::array<float, NUM_WHEELS> wheelCommands{};          // wheelCommands[i] -> torque for wheel i (Nm)
-  std::array<float, NUM_TORQUERS> magnetorquerCommands{}; // magnetorquerCommands[i] -> dipole moment for torquer i (A*m^2)
+  // wheelCommands[i]/magnetorquerCommands[i] -> torque for wheel i (Nm) /
+  // dipole moment for torquer i (A*m^2), unclamped -- the caller's own
+  // actuator driver enforces its hardware's actual max (e.g. this
+  // simulation's ReactionWheel::commandTorque()/Magnetorquer::
+  // commandDipoleMoment() both clamp internally), matching how a real
+  // motor/coil driver silently saturates rather than the commanding task
+  // needing to know each actuator's limit itself.
+  std::array<float, NUM_WHEELS> wheelCommands{};
+  std::array<float, NUM_TORQUERS> magnetorquerCommands{};
 
   // B-dot gain (A*m^2 per T/s): m_cmd = -bdotGain * dB/dt. Tuned once at
   // configure() from the magnetorquers' max moment; exposed here so a UI
@@ -228,15 +238,23 @@ public:
 
   void resetController();
 
-  // EKF "predict"+"correct": strapdown-integrates estimatedAttitude and
-  // (when a star-tracker/TRIAD measurement is available) corrects it,
-  // publishing attitudeUncertaintyDeg and the bias-corrected rate implicit
-  // in gyroBiasEstimate -- ADCS's own telemetry, exactly what a fault
-  // monitor consumes without computing itself. Must run before control()
-  // each cycle; split out as its own entry point (rather than folded into
-  // step() below) specifically so FlightSoftware::step() can run FDIR in
-  // between the two, using this cycle's freshly-updated telemetry.
-  void updateEstimator(const FSWInputs &in, float dt);
+  // EKF "predict"+"correct": strapdown-integrates estimatedAttitude using
+  // `imu`, correcting it against `star` when valid (a fresh star-tracker
+  // frame this cycle) or the `mag`/`sunSensor`/`spacecraftPositionWorld`
+  // TRIAD fallback otherwise, publishing attitudeUncertaintyDeg and the
+  // bias-corrected rate implicit in gyroBiasEstimate -- ADCS's own
+  // telemetry, exactly what a fault monitor consumes without computing
+  // itself. A sensor whose own realistic sample rate is slower than this
+  // cycle (see FlightSoftware.h's own header comment) is simply passed
+  // with valid=false when it has no fresh reading yet -- the same routine,
+  // expected condition as a physical dropout, requiring no special case
+  // here. Must run before control() each cycle; split out as its own
+  // entry point (rather than folded into step() below) specifically so
+  // FlightSoftware::step() can run FDIR in between the two, using this
+  // cycle's freshly-updated telemetry.
+  void updateEstimator(const ImuSample &imu, const MagSample &mag, const StarTrackerSample &star,
+                       const SunSensorSample &sunSensor, const PowerSample &power,
+                       const glm::vec3 &spacecraftPositionWorld, float dt);
 
   // Guidance + attitude control + desaturation + actuator allocation for
   // this cycle, executing whatever `effectiveMode` is *already set to* --
@@ -244,9 +262,13 @@ public:
   // single-function step(), before FDIR moved out to FlightSoftware); the
   // caller (FlightSoftware::step(), or this class's own step() below for
   // FDIR-agnostic use) is responsible for setting it first. Requires
-  // updateEstimator() to have already run this cycle (recomputes the
-  // same bias-corrected rate updateEstimator's propagation used).
-  FSWOutputs control(const FSWInputs &in, float dt);
+  // updateEstimator() to have already run this cycle (recomputes the same
+  // bias-corrected rate its propagation used, from lastGyroBody/
+  // gyroBiasEstimate). Leaves the result in wheelCommands/
+  // magnetorquerCommands for the caller to apply -- see their own comment;
+  // this class never touches simulated/real hardware itself.
+  void control(const std::array<WheelTelemetry, NUM_WHEELS> &wheelTelemetry,
+              const glm::vec3 &spacecraftPositionWorld, float dt);
 
   // Convenience entry point for FDIR-agnostic use (e.g. testing guidance/
   // control/estimation in isolation): runs updateEstimator() then
@@ -255,7 +277,10 @@ public:
   // aware operation goes through FlightSoftware::step() instead, which
   // owns FDIR as a peer of this class and resolves effectiveMode from it
   // between the same two calls.
-  FSWOutputs step(const FSWInputs &in, float dt);
+  void step(const ImuSample &imu, const MagSample &mag, const StarTrackerSample &star,
+           const SunSensorSample &sunSensor, const PowerSample &power,
+           const std::array<WheelTelemetry, NUM_WHEELS> &wheelTelemetry,
+           const glm::vec3 &spacecraftPositionWorld, float dt);
 
   // Direct access to each controller's gains, for UI panels that want to
   // display/edit them live -- computeControl() reads these same fields
@@ -314,9 +339,8 @@ private:
 
   void computeGuidance(const glm::vec3 &spacecraftPositionWorld, float dt);
   void computeControl(glm::quat attitude, glm::vec3 rate, float dt);
-  void updateDesaturation(const FSWInputs &in);
+  void updateDesaturation(const std::array<WheelTelemetry, NUM_WHEELS> &wheelTelemetry);
   void allocateActuators();
-  FSWOutputs buildOutputs() const;
 
   // Autonomous DETUMBLE entry/exit from bias-corrected body rate -- see
   // the detumbleEntry/ExitRateRadS field comments above.
@@ -347,7 +371,9 @@ private:
   // measurement can be formed (magnetometer/sun-sensor invalid this cycle,
   // no sun position configured, or the two references are too close to
   // parallel for a reliable TRIAD solve).
-  bool computeTriadFallback(const FSWInputs &in, glm::quat &outAttitude, float &outR) const;
+  bool computeTriadFallback(const MagSample &mag, const SunSensorSample &sunSensor,
+                            const glm::vec3 &spacecraftPositionWorld,
+                            glm::quat &outAttitude, float &outR) const;
 
   // Two-vector (TRIAD) deterministic attitude solve: given a primary and
   // secondary direction, each measured in BODY frame and known in REF

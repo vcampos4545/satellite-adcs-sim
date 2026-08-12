@@ -22,7 +22,8 @@ otherwise; SI units unless stated otherwise (kg, m, s, rad, N·m, T, W, J).
 
 - **World frame is ECI**: Earth's center is the world origin, and
   `RigidBody::position` (and everything derived from it — `target`,
-  `sunPosition`, `ambientFieldWorld`, `FSWInputs.spacecraftPositionWorld`)
+  `sunPosition`, `ambientFieldWorld`, the `spacecraftPositionWorld`
+  `ADCS::updateEstimator()`/`control()` are fed each cycle)
   is expressed in real meters in that frame. `sat.body->position` is
   bridged from the real orbital state every frame (see "Orbital
   Mechanics" below) — the satellite genuinely moves through real ECI
@@ -36,31 +37,39 @@ otherwise; SI units unless stated otherwise (kg, m, s, rad, N·m, T, W, J).
   Sensor readings, actuator axes, and the EKF state are all in this frame.
 
 FSW itself never knows any of this is ECI specifically — `ADCS`/`FDIR`
-only ever see the plain `FSWInputs`/`ADCS` fields (`spacecraftPositionWorld`,
-`sunPosition`, ...) through the ordinary hardware-abstraction boundary
-(see below), the same as they would against a HIL rig or real flight
-hardware. "World frame is ECI" is a fact about what the _harness_ feeds
-them, not something FSW code depends on or could tell from the inside.
+only ever see plain per-sensor readings and `ADCS`'s own fields
+(`spacecraftPositionWorld`, `sunPosition`, ...) through the ordinary
+hardware-abstraction boundary (see below), the same as they would against
+a HIL rig or real flight hardware. "World frame is ECI" is a fact about
+what the _harness_ feeds them, not something FSW code depends on or could
+tell from the inside.
 
 ## Hardware-Abstraction Boundary
 
-`ADCS`/`FDIR`/`FlightSoftware` (the flight software) never reference
+`ADCS`/`FDIR` (not `FlightSoftware` — see below) never reference
 `RigidBody`, `PhysicsWorld`, or any sensor/actuator simulation type — see
-`src/fsw/FlightTypes.h`. `FlightSoftware::step()` — which owns `ADCS` and
-`FDIR` as peers and is this project's actual cyclic FSW entry point (see
-"`FlightSoftware` / `SystemMode`" below) — is a pure function of
-`(internal state, FSWInputs, dt) -> FSWOutputs`, same as
-`ADCS::step()`/`control()`/`updateEstimator()` themselves. There is
-deliberately no interface/HAL type crossing into `src/fsw/` at all — the
-one place simulated hardware is translated to/from this plain-data
-contract is `Satellite::sampleSensors()`/`applyActuatorCommands()`
-(`src/core/Satellite.h`/`.cpp`), called by `main()` immediately before/after
-`flightSoftware.step()`. This is the seam a HIL rig or real flight
-hardware would eventually replace: a HIL harness would build `FSWInputs`
-from real sensors and apply the returned `FSWOutputs` to real actuators
-the same way `Satellite`'s two methods do here, without `FlightSoftware`/
-`ADCS`/`FDIR` changing at all. It's also why `tests/` can build FSW logic
-against nothing but `glm` (see `tests/CMakeLists.txt`).
+`src/fsw/FlightTypes.h`. `ADCS::updateEstimator()`/`control()`/`step()`
+take plain per-sensor readings (`ImuSample`, `MagSample`,
+`StarTrackerSample`, `SunSensorSample`, `PowerSample`,
+`WheelTelemetry`) and leave commanded actuator values in
+`wheelCommands`/`magnetorquerCommands` for the caller to apply — there is
+deliberately no interface/HAL type crossing into `ADCS.h`/`ADCS.cpp` at
+all, and no bundled "one snapshot per cycle" struct either (see
+`FlightSoftware`'s per-sensor sample rates below). It's also why
+`test_adcs_control.cpp`/`test_detumble.cpp`/`test_flight_software.cpp` can
+build this FSW logic against nothing but `glm` (see
+`tests/CMakeLists.txt`), constructing exact synthetic sensor readings.
+
+`FlightSoftware` (`src/fsw/FlightSoftware.h`/`.cpp`) is _not_
+hardware-abstracted: it's this project's one bridge from `ADCS`/`FDIR` to
+a real `Satellite` (`src/core/Satellite.h`/`.cpp`) — sampling each sensor
+directly, applying actuator commands directly, all inside
+`FlightSoftware::step()`. This was a deliberate simplification: keeping a
+plain-data `FSWInputs`/`FSWOutputs` contract at this layer (portable to a
+HIL rig/real hardware) was judged less valuable than this project's single
+simulation harness being simple. `ADCS`/`FDIR` themselves are unaffected —
+they're still exactly the seam a HIL rig or real flight hardware would
+plug into, just one layer down from where it used to be.
 
 ---
 
@@ -149,27 +158,31 @@ parent-relative position) and puts the spacecraft in orbital mode around
 Earth, perturbed by the Sun and Moon — the same "build once at setup" role
 `buildSatellitePyramid()` plays for the spacecraft itself. `ADCS` never sees
 any of this directly — it stays hardware-abstracted, only ever reading the
-derived quantities below (fed to it by `Fsw::step()`, `src/core/Fsw.h`/
-`.cpp`).
+derived quantities below (fed to it by `FlightSoftware::step()`,
+`src/fsw/FlightSoftware.h`/`.cpp`).
 
-**One fixed-rate loop drives `Simulation::step()` and one `Fsw` cycle
-together**, in that order, once per `Config::TIME_STEP_S`
+**One fixed-rate loop drives `Simulation::step()` and one `FlightSoftware`
+cycle together**, in that order, once per `Config::TIME_STEP_S`
 (`main()`): `sim.step(dt)` — `world.step(dt)` (propagates the Sun/Earth/
 Moon hierarchy and the spacecraft's orbital-mode state, then integrates
 rotational dynamics against whatever actuator commands
-`Satellite::applyActuatorCommands()` issued at the _end_ of the previous
-cycle — zero-order hold, the standard discretization for a sampled control
-loop), followed by refreshing `Simulation`'s own cached eclipse/
-field/sun-direction quantities from `world.isInEclipse()`/
-`ambientFieldAt()`/`absolutePosition()` queries — then `fsw.step(dt)` —
-ground-station target selection, `Satellite::sampleSensors()` →
-`flightSoftware.step()` → `Satellite::applyActuatorCommands()`, EPS, and
-telemetry. Keeping orbit propagation and rotational dynamics inside the
-same `world.step()` call (rather than two separately-scheduled systems the
-harness has to keep in sync by hand) is what guarantees every actuator
-command a control cycle issues actually gets integrated before the next
-one runs, and is what lets `Simulation`/`Fsw` _read_ eclipse/field/
-sun-direction as `PhysicsWorld` query results instead of re-deriving them.
+`commandTorque()`/`commandDipoleMoment()` issued at the _end_ of the
+previous cycle — zero-order hold, the standard discretization for a
+sampled control loop), followed by refreshing `Simulation`'s own cached
+eclipse/field/sun-direction quantities from `world.isInEclipse()`/
+`ambientFieldAt()`/`absolutePosition()` queries — then `fsw.step(dt, ...)`
+— ground-station target selection, per-sensor sampling (each at its own
+realistic rate — see "`FlightSoftware` / `SystemMode`" below) →
+`flightSoftware.adcs`'s estimator/FDIR/control → actuator commanding, EPS.
+`main()` reads `fsw`'s public telemetry fields afterward for its own UI
+history (`Simulation::updateTelemetry()`) — `FlightSoftware` itself has no
+UI-plotting concern. Keeping orbit propagation and rotational dynamics
+inside the same `world.step()` call (rather than two separately-scheduled
+systems the harness has to keep in sync by hand) is what guarantees every
+actuator command a control cycle issues actually gets integrated before
+the next one runs, and is what lets `Simulation`/`FlightSoftware` _read_
+eclipse/field/sun-direction as `PhysicsWorld` query results instead of
+re-deriving them.
 
 **Double-precision truth, bridged into `RigidBody` every FSW cycle**: a
 LEO orbital radius (~6.9e6 m) leaves float32 with only meter-level
@@ -382,14 +395,15 @@ this station in the footprint circle" and "is this station a valid
 targeting candidate" never disagree.
 
 **What the harness derives from this each cycle**, and feeds across the
-hardware-abstraction boundary as plain `FSWInputs`/`ADCS` fields (see
-"Coordinate Frames" above — FSW itself just sees these as ordinary
+hardware-abstraction boundary as plain per-sensor readings/`ADCS` fields
+(see "Coordinate Frames" above — FSW itself just sees these as ordinary
 vectors, the same as it would from a HIL rig or real hardware):
 
-- `FSWInputs.spacecraftPositionWorld` — the real orbital position itself
-  (`sat.body->position`, bridged from `orbitState` as described above),
-  used directly by `NADIR`/`TARGET`/`SUN_POINTING`/`REFLECT` guidance
-  (see "Guidance" below).
+- `spacecraftPositionWorld` (fed to `ADCS::updateEstimator()`/`control()`
+  each cycle) — the real orbital position itself (`sat.body->position`,
+  bridged from `orbitState` as described above), used directly by
+  `NADIR`/`TARGET`/`SUN_POINTING`/`REFLECT` guidance (see "Guidance"
+  below).
 - `adcs.ambientFieldWorld` — sampled from `CentralBodyMagneticField` (the
   engine's tilted-dipole model, same formula the old kinematic stand-in
   used) at the real position, instead of a fake orbital phase.
@@ -943,31 +957,53 @@ used during commissioning/testing.
 ## `FlightSoftware` / `SystemMode`
 
 `FlightSoftware` (`src/fsw/FlightSoftware.h`/`.cpp`) is this project's
-actual cyclic FSW entry point: sensor data in (`FSWInputs`), actuator
-commands out (`FSWOutputs`), once per call. It owns `ADCS` and `FDIR` as
-peers and runs them in the same "sense → evaluate health → act" order a
-real cyclic executive follows:
+actual cyclic FSW entry point: once per call, it samples each sensor,
+drives `ADCS`/`FDIR`, and commands each actuator, against a real
+`Satellite` (`src/core/Satellite.h`/`.cpp`) — see "Hardware-Abstraction
+Boundary" above for why this class (unlike `ADCS`/`FDIR`) isn't itself
+hardware-abstracted. It owns `ADCS` and `FDIR` as peers and runs them in
+the same "sense → evaluate health → act" order a real cyclic executive
+follows:
 
-1. `adcs.updateEstimator(in, dt)` — EKF predict+correct; publishes
+1. **Sample.** Each sensor is read independently, at its own realistic
+   rate — IMU, magnetometer, and wheel telemetry every cycle (real
+   hardware for all three comfortably exceeds this loop's 20 Hz on its
+   own); the star tracker, sun sensor, and battery/power telemetry each
+   behind their own timer (`Config::STAR_TRACKER_SAMPLE_PERIOD_S` = 0.2s
+   / 5 Hz, an image-processing-based attitude solve; `SUN_SENSOR_SAMPLE_
+   PERIOD_S` = 0.1s / 10 Hz, a coarse analog sensor polled over a bus;
+   `POWER_SAMPLE_PERIOD_S` = 1.0s / 1 Hz, a typical I2C fuel-gauge IC). A
+   cycle without a fresh star-tracker frame reports `valid=false` rather
+   than resending the last one (a stale absolute-attitude correction
+   applied repeatedly would fight propagation); the sun sensor and
+   battery telemetry, which are only ever read as reference/ambient state
+   rather than corrected against once, simply keep their last sample
+   between refreshes.
+2. `adcs.updateEstimator(imu, mag, star, sunSensor, power,
+   spacecraftPositionWorld, dt)` — EKF predict+correct; publishes
    `attitudeUncertaintyDeg` and (implicitly, via `gyroBiasEstimate`) the
-   bias-corrected rate as `ADCS`'s own telemetry.
-2. `fdir.evaluate(fdirIn, dt)` — reads that telemetry plus wheel health/
+   bias-corrected rate as `ADCS`'s own telemetry. A `valid=false` reading
+   (no fresh sample this cycle, from step 1) is treated exactly like a
+   physical sensor dropout — the estimate coasts on propagation alone.
+3. `fdir.evaluate(fdirIn, dt)` — reads that telemetry plus wheel health/
    battery SOC/commanded mode, and resolves `adcs.effectiveMode`. Runs
    even under `adcs.manualOverride` — a fault is still worth detecting/
    logging while a human has the stick; `adcs.control()` below is what
    actually respects `manualOverride`.
-3. `adcs.control(in, dt)` — guidance + attitude control + desaturation +
-   actuator allocation, executing whatever `effectiveMode` step 2 just
-   resolved.
+4. `adcs.control(wheelTelemetry, spacecraftPositionWorld, dt)` — guidance
+   + attitude control + desaturation + actuator allocation, executing
+   whatever `effectiveMode` step 3 just resolved, leaving the result in
+   `adcs.wheelCommands`/`magnetorquerCommands`.
+5. **Command.** `FlightSoftware` applies those commands directly —
+   `wheels[i]->commandTorque(adcs.wheelCommands[i])`/`magnetorquers[i]->
+   commandDipoleMoment(adcs.magnetorquerCommands[i])`, both of which clamp
+   to that actuator's own hardware limit internally, the same way a real
+   motor/coil driver silently saturates rather than the commanding task
+   needing to know each actuator's limit itself.
 
-Deliberately no HAL/interface layer sits between `FlightSoftware` and the
-harness — `step()` is a pure function of `(internal state, FSWInputs, dt)
--> FSWOutputs`, same shape as `ADCS::step()` itself (see "Hardware-
-Abstraction Boundary" above). The harness's main loop is what bridges
-between this and simulated hardware, via `Satellite::sampleSensors()`/
-`applyActuatorCommands()` (`src/core/Satellite.h`/`.cpp`) — see "Orbital
-Mechanics"'s note on the unified fixed-rate loop for exactly where those
-calls happen relative to `world.step()`/`orbitPropagator.step()`.
+See "Orbital Mechanics"'s note on the unified fixed-rate loop for exactly
+where a `FlightSoftware::step()` call happens relative to
+`world.step()`/`orbitPropagator.step()`.
 
 `ADCS` also exposes a thin `step(in, dt)` convenience wrapper
 (`updateEstimator()` + `effectiveMode = mode` + `control()`) for
@@ -1013,15 +1049,17 @@ not a missing model).
 `SolarPanel` nor `SunSensor` (in `spacecraft-dynamics-sim`) has any notion
 of eclipse — both compute purely from the geometric sun direction they're
 given, and both headers explicitly document that a scenario wanting
-eclipse-aware behavior has to gate it externally. `main.cpp`
+eclipse-aware behavior has to gate it externally. `FlightSoftware::step()`
 does this in two places: solar generation is zeroed (above), and
 `SunSensor::Reading.valid` is additionally ANDed with `!inEclipse` before
-being handed to `FSWInputs.sunSensor` — a real coarse sun sensor reports
-no lock when the sun is physically blocked by Earth, not just when the
-geometric direction is undefined. This matters beyond EPS: TRIAD fallback
-(`computeTriadFallback`, `ADCS.cpp`) requires `in.sunSensor.valid`, so
-without this gate it would happily solve a TRIAD attitude correction from
-a sun reference the satellite couldn't actually observe during eclipse.
+being cached into `lastSunSensor_` (on the cycles it actually samples the
+sun sensor — see "`FlightSoftware` / `SystemMode`" above) — a real coarse
+sun sensor reports no lock when the sun is physically blocked by Earth,
+not just when the geometric direction is undefined. This matters beyond
+EPS: TRIAD fallback (`computeTriadFallback`, `ADCS.cpp`) requires a valid
+sun-sensor reading, so without this gate it would happily solve a TRIAD
+attitude correction from a sun reference the satellite couldn't actually
+observe during eclipse.
 `StarTracker` is deliberately _not_ gated by eclipse — its own blinding
 model (sun-exclusion angle, slew rate) is independent of it, and a real
 star tracker generally sees better in eclipse (no sun/albedo glare), not
@@ -1043,9 +1081,12 @@ ends; this is the honest equivalent without modeling real cell chemistry —
 good enough to show "voltage sags as the battery depletes," which is the
 property anything reacting to it (FDIR, a UI panel) actually needs.
 
-**Consumption** (harness-computed each FSW cycle, `main.cpp`):
-fixed loads (OBC baseline + every always-on sensor) plus effort-proportional
-actuator loads, from the commands `step()` just issued:
+**Consumption** (`Satellite::updatePower()`, called by `FlightSoftware::
+step()` each FSW cycle after actuator commands are applied): fixed loads
+(OBC baseline + every always-on sensor) plus effort-proportional actuator
+loads, read directly off `wheels[i]->commandedTorque`/`magnetorquers[i]->
+commandedDipoleMoment` (already set by that cycle's `commandTorque()`/
+`commandDipoleMoment()` calls):
 
 ```
 drawW = POWER_OBC_BASELINE_W + POWER_IMU_W + POWER_MAGNETOMETER_W
@@ -1064,7 +1105,10 @@ rather than a flat idle number, matching how a real motor's draw depends
 on what it's actually being asked to do.
 
 Net power (`genW - drawW`) integrates into the battery every cycle,
-computed with the _previous_ cycle's SOC as `FSWInputs.power.batterySoc`
+computed from the _previous_ cycle's actuator commands as read off
+`wheels[i]->commandedTorque`/`magnetorquers[i]->commandedDipoleMoment`
 (the same "read before this cycle's effects" relationship
 `wheelTelemetry[i].speedRadS` already has with the wheel commands about to
-be issued).
+be issued) — `Satellite::updatePower()` runs immediately after
+`FlightSoftware::step()` applies this cycle's fresh commands, so in
+practice it's this cycle's commands, not the previous one's.

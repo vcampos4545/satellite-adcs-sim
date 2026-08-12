@@ -26,16 +26,16 @@ int main()
     glm::vec3 spacecraftPos = glm::normalize(glm::vec3(1.0f, 0.5f, -0.3f)) * 6.871e6f; // 500km-altitude-scale LEO position
     glm::vec3 expectedNadirDir = -glm::normalize(spacecraftPos);
 
-    FSWInputs in;
-    in.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
-    in.mag = {glm::vec3(0, 0, 3e-5f), true};
-    in.star = {glm::quat(1, 0, 0, 0), true};
-    in.power = {1.0f, 8.4f};
-    in.spacecraftPositionWorld = spacecraftPos;
+    ImuSample imu{glm::vec3(0.0f), glm::vec3(0.0f)};
+    MagSample mag{glm::vec3(0, 0, 3e-5f), true};
+    StarTrackerSample star{glm::quat(1, 0, 0, 0), true};
+    SunSensorSample sunSensor;
+    PowerSample power{1.0f, 8.4f};
+    std::array<WheelTelemetry, NUM_WHEELS> wheelTelemetry{};
     for (int w = 0; w < NUM_WHEELS; w++)
-      in.wheelTelemetry[w] = {0.0f, true};
+      wheelTelemetry[w] = {0.0f, true};
 
-    adcs.step(in, 0.05f);
+    adcs.step(imu, mag, star, sunSensor, power, wheelTelemetry, spacecraftPos, 0.05f);
 
     glm::vec3 achievedDir = adcs.targetAttitude * glm::vec3(0, 0, 1);
     float angleErrDeg = glm::degrees(std::acos(glm::clamp(glm::dot(achievedDir, expectedNadirDir), -1.0f, 1.0f)));
@@ -63,25 +63,25 @@ int main()
     adcs.ambientFieldWorld = fieldWorld;
     glm::mat3 invI = glm::inverse(hw.busInertiaTensor);
     float dt = 0.05f;
+    std::array<WheelTelemetry, NUM_WHEELS> wheelTelemetry{};
+    for (int w = 0; w < NUM_WHEELS; w++)
+      wheelTelemetry[w] = {0.0f, true};
     for (int i = 0; i < 40000; i++) // 2000s simulated
     {
       trueAtt = glm::normalize(trueAtt * glm::quat(1.0f, 0.5f * trueRate * dt));
       glm::vec3 fieldBody = glm::inverse(trueAtt) * fieldWorld;
 
-      FSWInputs in;
-      in.imu = {trueRate, glm::vec3(0.0f)};
-      in.mag = {fieldBody, true};
-      in.star = {trueAtt, true};
-      in.power = {1.0f, 8.4f};
-      in.spacecraftPositionWorld = glm::vec3(0.0f);
-      for (int w = 0; w < NUM_WHEELS; w++)
-        in.wheelTelemetry[w] = {0.0f, true};
+      ImuSample imu{trueRate, glm::vec3(0.0f)};
+      MagSample mag{fieldBody, true};
+      StarTrackerSample star{trueAtt, true};
+      SunSensorSample sunSensor;
+      PowerSample power{1.0f, 8.4f};
 
-      FSWOutputs out = adcs.step(in, dt);
+      adcs.step(imu, mag, star, sunSensor, power, wheelTelemetry, glm::vec3(0.0f), dt);
 
       glm::vec3 dipole(0.0f);
       for (int t = 0; t < NUM_TORQUERS; t++)
-        dipole += out.torquerCommands[t].momentAm2 * hw.torquers[t].axisBody;
+        dipole += adcs.magnetorquerCommands[t] * hw.torquers[t].axisBody;
       glm::vec3 torqueBody = glm::cross(dipole, fieldBody);
       trueRate += invI * torqueBody * dt;
     }
@@ -104,24 +104,24 @@ int main()
 
     glm::mat3 invI = glm::inverse(hw.busInertiaTensor);
     float dt = 0.05f;
+    std::array<WheelTelemetry, NUM_WHEELS> wheelTelemetry{};
+    for (int w = 0; w < NUM_WHEELS; w++)
+      wheelTelemetry[w] = {0.0f, true};
     for (int i = 0; i < 3000; i++)
     {
       trueAtt = glm::normalize(trueAtt * glm::quat(1.0f, 0.5f * trueRate * dt));
 
-      FSWInputs in;
-      in.imu = {trueRate, glm::vec3(0.0f)};
-      in.mag = {glm::vec3(0, 0, 3e-5f), true};
-      in.star = {trueAtt, true};
-      in.power = {1.0f, 8.4f};
-      in.spacecraftPositionWorld = glm::vec3(0.0f);
-      for (int w = 0; w < NUM_WHEELS; w++)
-        in.wheelTelemetry[w] = {0.0f, true};
+      ImuSample imu{trueRate, glm::vec3(0.0f)};
+      MagSample mag{glm::vec3(0, 0, 3e-5f), true};
+      StarTrackerSample star{trueAtt, true};
+      SunSensorSample sunSensor;
+      PowerSample power{1.0f, 8.4f};
 
-      FSWOutputs out = adcs.step(in, dt);
+      adcs.step(imu, mag, star, sunSensor, power, wheelTelemetry, glm::vec3(0.0f), dt);
 
       glm::vec3 torqueBody(0.0f);
       for (int w = 0; w < NUM_WHEELS; w++)
-        torqueBody += out.wheelCommands[w].torqueNm * hw.wheels[w].spinAxisBody;
+        torqueBody += adcs.wheelCommands[w] * hw.wheels[w].spinAxisBody;
       // Reaction torque on the bus is -torqueBody (Newton's third law,
       // matches ReactionWheel's actual convention in the sim/engine).
       trueRate += invI * (-torqueBody) * dt;
@@ -148,6 +148,9 @@ int main()
     adcs.ambientFieldWorld = fieldWorld;
     float dt = 0.05f;
     bool sawFallback = false;
+    std::array<WheelTelemetry, NUM_WHEELS> wheelTelemetry{};
+    for (int w = 0; w < NUM_WHEELS; w++)
+      wheelTelemetry[w] = {0.0f, true};
     for (int i = 0; i < 400; i++)
     {
       bool starValid = (i % 10) != 0; // drop out 1 in 10 cycles
@@ -155,17 +158,13 @@ int main()
       glm::vec3 sunDirWorld = glm::normalize(adcs.sunPosition);
       glm::vec3 sunDirBody = glm::inverse(trueAtt) * sunDirWorld;
 
-      FSWInputs in;
-      in.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
-      in.mag = {fieldBody, true};
-      in.star = {trueAtt, starValid};
-      in.sunSensor = {sunDirBody, true};
-      in.power = {1.0f, 8.4f};
-      in.spacecraftPositionWorld = glm::vec3(0.0f);
-      for (int w = 0; w < NUM_WHEELS; w++)
-        in.wheelTelemetry[w] = {0.0f, true};
+      ImuSample imu{glm::vec3(0.0f), glm::vec3(0.0f)};
+      MagSample mag{fieldBody, true};
+      StarTrackerSample star{trueAtt, starValid};
+      SunSensorSample sunSensor{sunDirBody, true};
+      PowerSample power{1.0f, 8.4f};
 
-      adcs.step(in, dt);
+      adcs.step(imu, mag, star, sunSensor, power, wheelTelemetry, glm::vec3(0.0f), dt);
       if (!starValid && adcs.triadFallbackUsed)
         sawFallback = true;
     }
@@ -202,26 +201,26 @@ int main()
     {
       trueAtt = glm::normalize(trueAtt * glm::quat(1.0f, 0.5f * trueRate * dt));
 
-      FSWInputs in;
-      in.imu = {trueRate, glm::vec3(0.0f)};
-      in.mag = {glm::vec3(0, 0, 3e-5f), true};
-      in.star = {trueAtt, true};
-      in.power = {1.0f, 8.4f};
-      in.spacecraftPositionWorld = glm::vec3(0.0f);
+      ImuSample imu{trueRate, glm::vec3(0.0f)};
+      MagSample mag{glm::vec3(0, 0, 3e-5f), true};
+      StarTrackerSample star{trueAtt, true};
+      SunSensorSample sunSensor;
+      PowerSample power{1.0f, 8.4f};
+      std::array<WheelTelemetry, NUM_WHEELS> wheelTelemetry{};
       for (int w = 0; w < NUM_WHEELS; w++)
-        in.wheelTelemetry[w] = {wheelSpeed[w], true};
+        wheelTelemetry[w] = {wheelSpeed[w], true};
 
-      FSWOutputs out = adcs.step(in, dt);
+      adcs.step(imu, mag, star, sunSensor, power, wheelTelemetry, glm::vec3(0.0f), dt);
 
       glm::vec3 wheelTorqueOnBus(0.0f);
       for (int w = 0; w < NUM_WHEELS; w++)
       {
-        wheelSpeed[w] += (out.wheelCommands[w].torqueNm / hw.wheels[w].wheelInertia) * dt;
-        wheelTorqueOnBus += -out.wheelCommands[w].torqueNm * hw.wheels[w].spinAxisBody;
+        wheelSpeed[w] += (adcs.wheelCommands[w] / hw.wheels[w].wheelInertia) * dt;
+        wheelTorqueOnBus += -adcs.wheelCommands[w] * hw.wheels[w].spinAxisBody;
       }
       glm::vec3 dipole(0.0f);
       for (int t = 0; t < NUM_TORQUERS; t++)
-        dipole += out.torquerCommands[t].momentAm2 * hw.torquers[t].axisBody;
+        dipole += adcs.magnetorquerCommands[t] * hw.torquers[t].axisBody;
       glm::vec3 magTorque = glm::cross(dipole, glm::vec3(0, 0, 3e-5f));
 
       trueRate += invI * (wheelTorqueOnBus + magTorque) * dt;
@@ -245,11 +244,11 @@ int main()
 
   // TRIAD fallback must refuse when the sun reference isn't actually
   // available (e.g. the harness gates SunSensor::Reading.valid to false
-  // during eclipse -- see main.cpp's own comment on this,
+  // during eclipse -- see FlightSoftware.cpp's own comment on this,
   // since SunSensor itself has no eclipse model). computeTriadFallback
-  // requires in.sunSensor.valid; with the star tracker also down (the
-  // scenario TRIAD fallback exists for in the first place), ADCS must not
-  // silently claim a TRIAD correction it can't actually perform.
+  // requires a valid sun-sensor reading; with the star tracker also down
+  // (the scenario TRIAD fallback exists for in the first place), ADCS must
+  // not silently claim a TRIAD correction it can't actually perform.
   {
     ADCS adcs;
     HardwareConfig hw = makeTestHardwareConfig();
@@ -258,17 +257,16 @@ int main()
     adcs.target = glm::vec3(1.0f, 0.0f, 0.0f);
     adcs.ambientFieldWorld = glm::vec3(0, 0, 3e-5f);
 
-    FSWInputs in;
-    in.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
-    in.mag = {glm::vec3(0, 0, 3e-5f), true};
-    in.star = {glm::quat(1, 0, 0, 0), false};   // star tracker down
-    in.sunSensor = {glm::vec3(0, 1, 0), false}; // sun reference unavailable (eclipse)
-    in.power = {1.0f, 8.4f};
-    in.spacecraftPositionWorld = glm::vec3(0.0f);
+    ImuSample imu{glm::vec3(0.0f), glm::vec3(0.0f)};
+    MagSample mag{glm::vec3(0, 0, 3e-5f), true};
+    StarTrackerSample star{glm::quat(1, 0, 0, 0), false};   // star tracker down
+    SunSensorSample sunSensor{glm::vec3(0, 1, 0), false}; // sun reference unavailable (eclipse)
+    PowerSample power{1.0f, 8.4f};
+    std::array<WheelTelemetry, NUM_WHEELS> wheelTelemetry{};
     for (int w = 0; w < NUM_WHEELS; w++)
-      in.wheelTelemetry[w] = {0.0f, true};
+      wheelTelemetry[w] = {0.0f, true};
 
-    adcs.step(in, 0.05f);
+    adcs.step(imu, mag, star, sunSensor, power, wheelTelemetry, glm::vec3(0.0f), 0.05f);
 
     CHECK(!adcs.triadFallbackUsed,
           "TRIAD fallback must not fire with an invalid sun sensor reading (eclipse), even with the star tracker also down");

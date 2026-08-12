@@ -142,50 +142,7 @@ Satellite buildSatellite(PhysicsWorld &world, HardwareConfig &outHw)
   return sat;
 }
 
-FSWInputs Satellite::sampleSensors(float dt)
-{
-  FSWInputs in;
-
-  IMU::Reading imuR = imu.sample(*body, gravity, dt);
-  in.imu = {imuR.gyro, imuR.accel};
-
-  Magnetometer::Reading magR = magnetometer.sample(*body, ambientFieldWorld, dt);
-  in.mag = {magR.field, true};
-
-  StarTracker::Reading starR = starTracker.sample(*body, sunDirWorld);
-  in.star = {starR.attitude, starR.valid};
-
-  SunSensor::Reading sunR = sunSensor.sample(*body, sunDirWorld);
-  // SunSensor has no eclipse model of its own (see its header: "valid is
-  // always true here... a scenario that wants eclipse-aware dropouts needs
-  // to gate this externally") -- a real coarse sun sensor reports no lock
-  // when the sun itself is physically blocked by Earth, not just when the
-  // geometric direction happens to be undefined, so that blindness is
-  // applied here. This also keeps TRIAD fallback (computeTriadFallback,
-  // ADCS.cpp) honest during eclipse: it already requires in.sunSensor.valid,
-  // but without this gate it would happily TRIAD off a sun direction the
-  // satellite couldn't actually observe.
-  in.sunSensor = {sunR.sunDirBody, sunR.valid && !inEclipse};
-
-  in.power = {battery.stateOfCharge(), battery.voltage()};
-
-  for (int i = 0; i < NUM_WHEELS; i++)
-    in.wheelTelemetry[i] = {wheels[i]->currentSpeed, wheels[i]->healthFactor > 0.01f};
-
-  in.spacecraftPositionWorld = body->position; // real orbital position (ECI meters) -- stands in for a real nav solution
-
-  return in;
-}
-
-void Satellite::applyActuatorCommands(const FSWOutputs &out)
-{
-  for (int i = 0; i < NUM_WHEELS; i++)
-    wheels[i]->commandTorque(out.wheelCommands[i].torqueNm);
-  for (int i = 0; i < NUM_TORQUERS; i++)
-    magnetorquers[i]->commandDipoleMoment(out.torquerCommands[i].momentAm2);
-}
-
-float Satellite::updatePower(float dt, const FSWOutputs &out)
+float Satellite::updatePower(float dt)
 {
   float genW = 0.0f;
   if (!inEclipse)
@@ -197,10 +154,10 @@ float Satellite::updatePower(float dt, const FSWOutputs &out)
                 Config::POWER_SUN_SENSOR_W;
   for (int i = 0; i < NUM_WHEELS; i++)
     drawW += Config::WHEEL_IDLE_POWER_W +
-             std::abs(out.wheelCommands[i].torqueNm * wheels[i]->currentSpeed) / Config::WHEEL_MOTOR_EFFICIENCY;
+             std::abs(wheels[i]->commandedTorque * wheels[i]->currentSpeed) / Config::WHEEL_MOTOR_EFFICIENCY;
   for (int i = 0; i < NUM_TORQUERS; i++)
     drawW += Config::TORQUER_IDLE_POWER_W +
-             std::abs(out.torquerCommands[i].momentAm2) * Config::TORQUER_POWER_PER_AM2_W;
+             std::abs(magnetorquers[i]->commandedDipoleMoment) * Config::TORQUER_POWER_PER_AM2_W;
 
   float netW = genW - drawW;
   battery.update(netW, dt);
