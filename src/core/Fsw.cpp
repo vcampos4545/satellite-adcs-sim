@@ -2,7 +2,7 @@
 #include "Config.h"
 #include <rigidbody/orbit/OrbitFrames.h>
 
-Fsw::Fsw(SimulationState &sim) : sim_(sim)
+Fsw::Fsw(Simulation &sim) : sim_(sim)
 {
   flightSoftware.configure(sim_.hwConfig, sim_.spacecraft.body->orientation);
 }
@@ -10,7 +10,7 @@ Fsw::Fsw(SimulationState &sim) : sim_(sim)
 void Fsw::step(float dt)
 {
   ADCS &adcs = flightSoftware.adcs;
-  Cubesat &spacecraft = sim_.spacecraft;
+  Satellite &spacecraft = sim_.spacecraft;
   const OrbitState &orbitState = sim_.world.orbitalState(spacecraft.body);
 
   adcs.sunPosition = sim_.sunPositionNow;
@@ -46,7 +46,7 @@ void Fsw::step(float dt)
   spacecraft.inEclipse = sim_.inEclipse;
 
   // The only place simulated hardware is translated to/from FSW's
-  // plain-data contract -- see Cubesat::sampleSensors()/
+  // plain-data contract -- see Satellite::sampleSensors()/
   // applyActuatorCommands() and FlightSoftware.h's own header comment.
   // FlightSoftware::step() itself never touches `spacecraft`.
   FSWInputs in = spacecraft.sampleSensors(dt);

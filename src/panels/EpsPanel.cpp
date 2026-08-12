@@ -2,7 +2,7 @@
 #include "core/Config.h"
 #include <imgui.h>
 
-void drawEpsTab(Cubesat &sat, ADCS &adcs, SensorTelemetry &telemetry, bool inEclipse)
+void drawEpsTab(Satellite &sat, ADCS &adcs, SensorTelemetry &telemetry, bool inEclipse)
 {
   float soc = sat.battery.stateOfCharge();
   ImVec4 socColor = soc > 0.5f   ? ImVec4(0.3f, 1.0f, 0.4f, 1.0f)

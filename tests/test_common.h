@@ -32,7 +32,7 @@ inline int g_testFailures = 0;
   return g_testFailures == 0 ? 0 : 1;
 
 // A representative 4-wheel pyramid + 3-axis torquer HardwareConfig, the
-// same shape buildCubesatPyramid() in main.cpp builds --
+// same shape buildSatellitePyramid() in main.cpp builds --
 // duplicated here (not shared with the harness) deliberately: ADCS is
 // hardware-abstracted specifically so it never needs the harness/sim to
 // exist at all, and a test suite that had to link the GUI harness to
@@ -47,7 +47,7 @@ inline HardwareConfig makeTestHardwareConfig()
       glm::normalize(glm::vec3(-1, -1, 1)),
   };
   for (int i = 0; i < NUM_WHEELS; i++)
-    hw.wheels[i] = {axes[i], 0.001f, 628.0f, 1e-6f}; // matches buildCubesatPyramid()'s wheel spec
+    hw.wheels[i] = {axes[i], 0.001f, 628.0f, 1e-6f}; // matches buildSatellitePyramid()'s wheel spec
   glm::vec3 torquerAxes[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
   for (int i = 0; i < NUM_TORQUERS; i++)
     hw.torquers[i] = {torquerAxes[i], 0.2f};

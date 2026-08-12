@@ -1,6 +1,6 @@
 #pragma once
 #include "fsw/FlightSoftware.h"
-#include "core/Cubesat.h"
+#include "core/Satellite.h"
 #include "core/SensorTelemetry.h"
 #include "SimulationPanel.h"
 #include "VisualizationPanel.h"
@@ -28,7 +28,7 @@
 // FswPanel.h/SensorsPanel.h/ActuatorsPanel.h/FdirPanel.h/EpsPanel.h/
 // OrbitPanel.h/GroundStationsPanel.h/SimulationPanel.h/
 // VisualizationPanel.h for each tab's own content.
-void drawADCSPanel(FlightSoftware &flightSoftware, Cubesat &sat,
+void drawADCSPanel(FlightSoftware &flightSoftware, Satellite &sat,
                    SensorTelemetry &telemetry, SimControls &sim,
                    EpochControls &epoch, VisualizationSettings &vis,
                    const OrbitState &orbitState, const Texture &earthTexture,

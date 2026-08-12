@@ -35,7 +35,7 @@ void drawMagnetorquers(GUI &gui, const std::vector<Magnetorquer *> &magnetorquer
 // representing the bus core at the center of the real 18m x 18m mirror
 // plate `sat` itself now is -- see Config::BUS_SIZE. Not a physics body,
 // purely visual (the composite mirror+bus mass/inertia is already baked
-// into `sat` by buildCubesatPyramid()).
+// into `sat` by buildSatellitePyramid()).
 void drawBus(GUI &gui, RigidBody *sat);
 
 // Draws the incoming ray from the sun to the mirror, and the outgoing

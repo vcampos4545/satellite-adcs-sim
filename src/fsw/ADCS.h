@@ -16,7 +16,7 @@ enum class ControllerType
 // and ADCS::activeDetumbleActuator -- using reaction wheels (fast, precise)
 // while they have budget and handing off to the classic B-dot law
 // (m = -k * dB/dt, sensed by the magnetometer) via MAGNETORQUERS_BDOT once
-// they don't, the standard low-cost/low-mass way a real cubesat detumbles.
+// they don't, the standard low-cost/low-mass way a real Satellite detumbles.
 // REACTION_WHEELS/MAGNETORQUERS_BDOT remain selectable as explicit manual
 // overrides. Only meaningful while mode == DETUMBLE; ignored otherwise.
 enum class DetumbleActuator
@@ -26,7 +26,7 @@ enum class DetumbleActuator
   AUTO
 };
 
-// Flight software for a 3-axis-stabilized cubesat: attitude estimation
+// Flight software for a 3-axis-stabilized Satellite: attitude estimation
 // (multiplicative EKF, star tracker primary / sun+magnetometer TRIAD
 // fallback), guidance (six pointing modes), attitude control (PID/LQR/
 // cascaded, auto-tuned from bus inertia), B-dot detumble, and cross-
@@ -97,7 +97,7 @@ public:
   float estimatedPointingErrorDeg = 0.0f;
 
   glm::vec3 torqueCommand;
-  std::array<float, NUM_WHEELS> wheelCommands{};        // wheelCommands[i] -> torque for wheel i (Nm)
+  std::array<float, NUM_WHEELS> wheelCommands{};          // wheelCommands[i] -> torque for wheel i (Nm)
   std::array<float, NUM_TORQUERS> magnetorquerCommands{}; // magnetorquerCommands[i] -> dipole moment for torquer i (A*m^2)
 
   // B-dot gain (A*m^2 per T/s): m_cmd = -bdotGain * dB/dt. Tuned once at

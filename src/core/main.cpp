@@ -1,7 +1,7 @@
 #include <vgl/vgl.h>
 #include "ImGuiLayer.h"
 #include "Config.h"
-#include "SimulationState.h"
+#include "Simulation.h"
 #include "Fsw.h"
 #include <cstdio>
 
@@ -16,12 +16,12 @@ int main()
       .setUp({0, 0, 1})
       .setClipPlanes(Config::CAMERA_NEAR, Config::CAMERA_FAR)
       .setFOV(Config::CAMERA_FOV);
-  // The scene spans a 0.1m cubesat up to a ~6.9e6m orbital radius -- a
+  // The scene spans a 0.1m Satellite up to a ~6.9e6m orbital radius -- a
   // standard depth buffer can't hold that range without z-fighting.
   gui.setLogDepth(Config::CAMERA_FAR);
   gui.setAmbientLight(Config::SCENE_AMBIENT_LIGHT);
 
-  SimulationState sim = buildSimulationState();
+  Simulation sim = buildSimulation();
   Fsw fsw(sim);
 
   glm::vec2 lastMousePos = gui.getMousePosition();

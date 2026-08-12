@@ -1,4 +1,4 @@
-#include "SimulationState.h"
+#include "Simulation.h"
 #include "Fsw.h"
 #include "Config.h"
 #include "rendering/SatelliteRenderer.h"
@@ -14,26 +14,17 @@
 #include <rigidbody/orbit/OrbitForceModel.h>
 #include <random>
 
-SimulationState::SimulationState(float tumbleKickRadS)
-    : camera(1.0f, 0.0f, 0.0f, glm::vec3(0.0f)), // reassigned to real values in buildSimulationState()
-      telemetry(Config::TELEMETRY_HISTORY_SAMPLES), simControls(tumbleKickRadS)
+Simulation::Simulation()
+    : camera(1.0f, 0.0f, 0.0f, glm::vec3(0.0f)), // reassigned to real values in buildSimulation()
+      telemetry(Config::TELEMETRY_HISTORY_SAMPLES), simControls(Config::TUMBLE_KICK_RAD_S)
 {
 }
 
-SimulationState buildSimulationState()
+Simulation buildSimulation()
 {
-  SimulationState sim(Config::TUMBLE_KICK_RAD_S);
+  Simulation sim;
 
-  sim.spacecraft = buildCubesatPyramid(sim.world, sim.hwConfig);
-
-  // Deployment: a real cubesat separates from its dispenser with real
-  // nonzero angular momentum -- same per-axis uniform kick shape as the
-  // manual "Kick into random tumble" button, applied once here instead of
-  // on a button press. ADCS's own automatic detumble entry (see ADCS.h's
-  // detumbleEntryRateRadS) is what's expected to react to this.
-  std::mt19937 deployRng(std::random_device{}());
-  std::uniform_real_distribution<float> deployTumble(-Config::DEPLOYMENT_TUMBLE_RATE_RAD_S, Config::DEPLOYMENT_TUMBLE_RATE_RAD_S);
-  sim.spacecraft.body->angularVelocity = glm::vec3(deployTumble(deployRng), deployTumble(deployRng), deployTumble(deployRng));
+  sim.spacecraft = buildSatellite(sim.world, sim.hwConfig);
 
   sim.earthTexture.loadFromFile(std::string(RESOURCES_DIR) + "/textures/earth.jpg");
   sim.sunTexture.loadFromFile(std::string(RESOURCES_DIR) + "/textures/sun.jpg");
@@ -45,17 +36,8 @@ SimulationState buildSimulationState()
       .setZoomSensitivity(Config::ZOOM_SENSITIVITY)
       .setPanSensitivity(Config::PAN_SENSITIVITY);
 
-  // Sun (root) -> Earth -> Moon: the same hierarchy Stage 1's
-  // checkPhysicsWorldOrbitalMode() validated end-to-end. Earth/Moon reuse
-  // the existing low-precision analytic ephemeris formulas as their
-  // parent-relative position (SunModel::positionEci already gives the
-  // Sun's position *as seen from Earth*, so Earth's position relative to
-  // the Sun is exactly its negation).
-  constexpr double GM_SUN = 1.32712440018e20;
-  constexpr double GM_MOON = 4.9048695e12;
-
   CelestialBodyParams sunParams;
-  sunParams.mu = GM_SUN;
+  sunParams.mu = Config::GM_SUN;
   sim.sunBody = sim.celestialSystem.addBody("Sun", sunParams);
   sim.celestialSystem.starBody = sim.sunBody;
 
@@ -65,15 +47,17 @@ SimulationState buildSimulationState()
   earthParams.dipoleTiltDeg = 11.0;
   earthParams.dipoleScaleTm3 = 7.94e15;
   sim.earthBody = sim.celestialSystem.addBody("Earth", earthParams, sim.sunBody);
-  sim.earthBody->analyticPositionFn = [](double jd) { return -SunModel::positionEci(jd); };
+  sim.earthBody->analyticPositionFn = [](double jd)
+  { return -SunModel::positionEci(jd); };
 
   CelestialBodyParams moonParams;
-  moonParams.mu = GM_MOON;
+  moonParams.mu = Config::GM_MOON;
   sim.moonBody = sim.celestialSystem.addBody("Moon", moonParams, sim.earthBody);
-  sim.moonBody->analyticPositionFn = [](double jd) { return MoonModel::positionEci(jd); };
+  sim.moonBody->analyticPositionFn = [](double jd)
+  { return MoonModel::positionEci(jd); };
 
   sim.missionEpochJd = OrbitTime::julianDate(sim.epoch.year, sim.epoch.month, sim.epoch.day,
-                                              sim.epoch.hour, sim.epoch.minute, sim.epoch.second);
+                                             sim.epoch.hour, sim.epoch.minute, sim.epoch.second);
   sim.currentJdNow = sim.missionEpochJd;
 
   sim.world.attachCelestialSystem(&sim.celestialSystem, sim.missionEpochJd);
@@ -95,7 +79,7 @@ SimulationState buildSimulationState()
   return sim;
 }
 
-void SimulationState::step(float dt)
+void Simulation::step(float dt)
 {
   missionEpochJd = OrbitTime::julianDate(epoch.year, epoch.month, epoch.day, epoch.hour, epoch.minute, epoch.second);
 
@@ -143,7 +127,7 @@ void SimulationState::step(float dt)
   }
 }
 
-void SimulationState::refreshGroundStationPasses(float realDt)
+void Simulation::refreshGroundStationPasses(float realDt)
 {
   groundStationPassRefreshTimer += realDt;
   if (groundStationPassRefreshTimer > Config::PASS_PREDICTION_REFRESH_S)
@@ -156,7 +140,7 @@ void SimulationState::refreshGroundStationPasses(float realDt)
   }
 }
 
-void SimulationState::handleCameraInput(GUI &gui, const glm::vec2 &mouseDelta, const glm::vec2 &scrollDelta)
+void Simulation::handleCameraInput(GUI &gui, const glm::vec2 &mouseDelta, const glm::vec2 &scrollDelta)
 {
   camera.setTarget(spacecraft.body->position);
   if (!ImGui::GetIO().WantCaptureMouse)
@@ -164,7 +148,7 @@ void SimulationState::handleCameraInput(GUI &gui, const glm::vec2 &mouseDelta, c
   camera.applyToCamera(gui.camera);
 }
 
-void SimulationState::draw(GUI &gui, Fsw &fsw, int &selectedPassIndex)
+void Simulation::draw(GUI &gui, Fsw &fsw, int &selectedPassIndex)
 {
   ADCS &adcs = fsw.flightSoftware.adcs;
 

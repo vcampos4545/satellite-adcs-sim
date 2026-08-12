@@ -53,12 +53,12 @@ them, not something FSW code depends on or could tell from the inside.
 `ADCS::step()`/`control()`/`updateEstimator()` themselves. There is
 deliberately no interface/HAL type crossing into `src/fsw/` at all — the
 one place simulated hardware is translated to/from this plain-data
-contract is `Cubesat::sampleSensors()`/`applyActuatorCommands()`
-(`src/core/Cubesat.h`/`.cpp`), called by `main()` immediately before/after
+contract is `Satellite::sampleSensors()`/`applyActuatorCommands()`
+(`src/core/Satellite.h`/`.cpp`), called by `main()` immediately before/after
 `flightSoftware.step()`. This is the seam a HIL rig or real flight
 hardware would eventually replace: a HIL harness would build `FSWInputs`
 from real sensors and apply the returned `FSWOutputs` to real actuators
-the same way `Cubesat`'s two methods do here, without `FlightSoftware`/
+the same way `Satellite`'s two methods do here, without `FlightSoftware`/
 `ADCS`/`FDIR` changing at all. It's also why `tests/` can build FSW logic
 against nothing but `glm` (see `tests/CMakeLists.txt`).
 
@@ -67,7 +67,7 @@ against nothing but `glm` (see `tests/CMakeLists.txt`).
 ## Spacecraft Structure: Composite Mirror + Bus Mass/Inertia
 
 A Reflect-Orbital-style mission concept: an 18m x 18m deployable mirror
-(the `RigidBody` itself, `src/core/Cubesat.cpp`'s `buildCubesatPyramid()`)
+(the `RigidBody` itself, `src/core/Satellite.cpp`'s `buildSatellitePyramid()`)
 with a much smaller bus at its center. The mirror plate and bus core are
 coaxially centered on the same point (a deployable-membrane layout like
 IKAROS's real solar sail — boom-mounted membrane, bus at the hub), so the
@@ -96,13 +96,13 @@ element. Standard cube inertia, `I = ms²/6` (all axes).
 
 **Composite** (sum, both about the shared center): total mass 75 kg,
 `Ixx = Iyy ≈ 946.7 kg·m²`, `Izz ≈ 1891.7 kg·m²` — confirmed by direct
-computation in a headless check against `buildCubesatPyramid()`'s actual
+computation in a headless check against `buildSatellitePyramid()`'s actual
 output. Applied via `RigidBody::setMass()`/`setInertiaTensor()`
 (`spacecraft-dynamics-sim`'s engine API for overriding the shape-derived
 mass/inertia with a more accurate composite value), not just a resized
 bounding box.
 
-This is a ~450,000-850,000x jump from the project's original 1U-cubesat
+This is a ~450,000-850,000x jump from the project's original 1U-Satellite
 inertia (~0.002 kg·m²), which in turn required resizing the wheel/
 magnetorquer actuators so the spacecraft retains meaningful angular
 control authority. Real reaction wheels are sized to the _bus's_
@@ -121,7 +121,7 @@ class, not the payload's own huge inertia:
 This is _smaller_ than an earlier placeholder value used during initial
 verification (1.0 Nm / 20 A·m², explicitly flagged then as "not a real
 spec"), and much smaller than what would be needed to hit the project's
-original 1U-cubesat-scale settling-time targets at this inertia — see
+original 1U-Satellite-scale settling-time targets at this inertia — see
 "Torque-aware auto-tune" under Attitude Control below for how that's
 reconciled.
 
@@ -142,33 +142,33 @@ the engine's **orbital mode**: `PhysicsWorld::attachCelestialSystem()` +
 `CelestialPerturbation` for each other body in the system), while its
 _rotational_ dynamics (orientation, angular velocity, actuator
 `ForceGenerator`s) keep integrating exactly like any other `RigidBody`.
-`SimulationState::buildSimulationState()` (`src/core/SimulationState.h`/
+`Simulation::buildSimulation()` (`src/core/Simulation.h`/
 `.cpp`) builds a Sun → Earth → Moon `CelestialSystem` (Earth/Moon reuse the
 existing low-precision `SunModel`/`MoonModel` analytic ephemeris as their
 parent-relative position) and puts the spacecraft in orbital mode around
 Earth, perturbed by the Sun and Moon — the same "build once at setup" role
-`buildCubesatPyramid()` plays for the spacecraft itself. `ADCS` never sees
+`buildSatellitePyramid()` plays for the spacecraft itself. `ADCS` never sees
 any of this directly — it stays hardware-abstracted, only ever reading the
 derived quantities below (fed to it by `Fsw::step()`, `src/core/Fsw.h`/
 `.cpp`).
 
-**One fixed-rate loop drives `SimulationState::step()` and one `Fsw` cycle
+**One fixed-rate loop drives `Simulation::step()` and one `Fsw` cycle
 together**, in that order, once per `Config::TIME_STEP_S`
 (`main()`): `sim.step(dt)` — `world.step(dt)` (propagates the Sun/Earth/
 Moon hierarchy and the spacecraft's orbital-mode state, then integrates
 rotational dynamics against whatever actuator commands
-`Cubesat::applyActuatorCommands()` issued at the _end_ of the previous
+`Satellite::applyActuatorCommands()` issued at the _end_ of the previous
 cycle — zero-order hold, the standard discretization for a sampled control
-loop), followed by refreshing `SimulationState`'s own cached eclipse/
+loop), followed by refreshing `Simulation`'s own cached eclipse/
 field/sun-direction quantities from `world.isInEclipse()`/
 `ambientFieldAt()`/`absolutePosition()` queries — then `fsw.step(dt)` —
-ground-station target selection, `Cubesat::sampleSensors()` →
-`flightSoftware.step()` → `Cubesat::applyActuatorCommands()`, EPS, and
+ground-station target selection, `Satellite::sampleSensors()` →
+`flightSoftware.step()` → `Satellite::applyActuatorCommands()`, EPS, and
 telemetry. Keeping orbit propagation and rotational dynamics inside the
 same `world.step()` call (rather than two separately-scheduled systems the
 harness has to keep in sync by hand) is what guarantees every actuator
 command a control cycle issues actually gets integrated before the next
-one runs, and is what lets `SimulationState`/`Fsw` _read_ eclipse/field/
+one runs, and is what lets `Simulation`/`Fsw` _read_ eclipse/field/
 sun-direction as `PhysicsWorld` query results instead of re-deriving them.
 
 **Double-precision truth, bridged into `RigidBody` every FSW cycle**: a
@@ -223,7 +223,7 @@ ECI state, summing a set of pluggable force models each stage
   its 75kg composite mass (see "Spacecraft Structure" above) — at this
   ratio SRP is no longer a minor perturbation (~2.9 mN at 1 AU for a
   reflective 324 m² surface), so visibly larger SRP-driven orbital
-  perturbation than the project's original 1U-cubesat scale is expected,
+  perturbation than the project's original 1U-Satellite scale is expected,
   not a bug.
 - **Third-body gravity, Sun and Moon** (`rigidbody/orbit/ThirdBodyGravity.h`):
   `a = mu_body * (d/|d|^3 - r_body/|r_body|^3)`, where `d = r_body -
@@ -773,7 +773,7 @@ damping settle (`omega_n = 4/8`, `Kd = 2*I*omega_n`).
 
 **Magnetorquers / B-dot** (`computeBdotDipoleCommand`): the classic law,
 `m = -k * dB/dt` (Wisniewski's B-dot detumbling — the standard
-magnetics-only technique real cubesats use right after deployment, before
+magnetics-only technique real Satellites use right after deployment, before
 wheels are trusted). `dB/dt` is finite-differenced from consecutive valid
 magnetometer samples.
 
@@ -830,7 +830,7 @@ actually flying Y" telemetry pattern `effectiveMode` already uses.
 `REACTION_WHEELS`/`MAGNETORQUERS_BDOT` remain selectable as explicit
 manual overrides.
 
-**Deployment** (`SimulationState::buildSimulationState()`, harness):
+**Deployment** (`Simulation::buildSimulation()`, harness):
 the spacecraft starts with a real nonzero angular velocity — a per-axis
 uniform kick over `[-Config::DEPLOYMENT_TUMBLE_RATE_RAD_S,
 +Config::DEPLOYMENT_TUMBLE_RATE_RAD_S]` (1.6 rad/s), the same shape as
@@ -964,8 +964,8 @@ Deliberately no HAL/interface layer sits between `FlightSoftware` and the
 harness — `step()` is a pure function of `(internal state, FSWInputs, dt)
 -> FSWOutputs`, same shape as `ADCS::step()` itself (see "Hardware-
 Abstraction Boundary" above). The harness's main loop is what bridges
-between this and simulated hardware, via `Cubesat::sampleSensors()`/
-`applyActuatorCommands()` (`src/core/Cubesat.h`/`.cpp`) — see "Orbital
+between this and simulated hardware, via `Satellite::sampleSensors()`/
+`applyActuatorCommands()` (`src/core/Satellite.h`/`.cpp`) — see "Orbital
 Mechanics"'s note on the unified fixed-rate loop for exactly where those
 calls happen relative to `world.step()`/`orbitPropagator.step()`.
 
@@ -1001,8 +1001,8 @@ powerW = solarFluxWm2 * areaM2 * efficiency * max(0, cos(incidenceAngle))
 ```
 
 clamped to zero (not negative) once the sun is behind the panel. One
-panel per body face (6 total, 0.01 m² each — the cubesat's own 10x10cm
-face), `efficiency = 0.28` (representative triple-junction cubesat cell).
+panel per body face (6 total, 0.01 m² each — the Satellite's own 10x10cm
+face), `efficiency = 0.28` (representative triple-junction Satellite cell).
 `solarFluxWm2 = 1361` (solar constant at 1 AU). Generation is additionally
 zeroed while `EclipseModel::inEclipse()` (see "Orbital Mechanics" below)
 says the real orbital position is in Earth's shadow — cylindrical shadow

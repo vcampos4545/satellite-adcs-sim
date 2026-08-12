@@ -5,7 +5,7 @@ description: Use whenever implementing, extending, or modifying a feature in mai
 
 # ADCS Feature Workflow
 
-This project (`main`) is a closed-loop cubesat ADCS/flight-
+This project (`main`) is a closed-loop Satellite ADCS/flight-
 software simulation built on the generic `spacecraft-dynamics-sim` engine
 (fetched via CMake `FetchContent`, not vendored). The workflow below is
 the one this project has actually converged on across its features
@@ -18,7 +18,7 @@ model) — follow it for new work rather than improvising a different shape.
   actuator, or environment/power model with no scenario-specific meaning)
   belongs in `spacecraft-dynamics-sim` (a sibling repo, fetched from
   GitHub) — see that repo's own architecture notes. Anything that only
-  makes sense for _this_ cubesat's mission (a new pointing mode, an FDIR
+  makes sense for _this_ Satellite's mission (a new pointing mode, an FDIR
   fault, the wheel-pyramid geometry) belongs here.
 - **Hardware-abstraction boundary**: `ADCS`/`FDIR` (`src/ADCS.*`,
   `src/FDIR.*`) never reference `RigidBody`, `PhysicsWorld`, or any

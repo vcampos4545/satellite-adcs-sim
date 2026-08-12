@@ -3,7 +3,7 @@
 #include <rigidbody/PhysicsWorld.h>
 #include <rigidbody/orbit/CelestialSystem.h>
 #include <rigidbody/environment/central_body/CentralBodyMagneticField.h>
-#include "Cubesat.h"
+#include "Satellite.h"
 #include "SensorTelemetry.h"
 #include "GroundStations.h"
 #include "panels/VisualizationPanel.h"
@@ -19,13 +19,14 @@ class Fsw;
 // every cached/history quantity the panels and 3D view read. `Fsw` (see
 // Fsw.h) is deliberately kept separate: this class never touches
 // FlightSoftware/ADCS.
-class SimulationState
+class Simulation
 {
 public:
   PhysicsWorld world;
-  Cubesat spacecraft;
+  Satellite spacecraft;
   HardwareConfig hwConfig;
 
+  // ECI system
   CelestialSystem celestialSystem;
   CelestialBody *sunBody = nullptr;
   CelestialBody *earthBody = nullptr;
@@ -39,7 +40,7 @@ public:
   EpochControls epoch;
   SimControls simControls;
 
-  // Cached-for-drawing-while-paused quantities, refreshed by step().
+  // Cached-for-drawing-while-paused quantities
   glm::vec3 fieldNow{0.0f};
   bool inEclipse = false;
   glm::vec3 sunPositionNow{0.0f};
@@ -56,7 +57,7 @@ public:
   std::vector<FieldLine> magneticFieldLines;
   CentralBodyMagneticField fieldLineModel; // Earth's dipole params, for drawMagneticFieldLines() only
 
-  explicit SimulationState(float tumbleKickRadS);
+  explicit Simulation();
 
   // Advances orbital truth + rotational physics by dt (world.step(dt),
   // which drives celestialSystem and the spacecraft's orbital-mode state
@@ -76,4 +77,4 @@ public:
   void draw(GUI &gui, Fsw &fsw, int &selectedPassIndex);
 };
 
-SimulationState buildSimulationState(); // builds the spacecraft, Sun/Earth/Moon hierarchy, textures, camera
+Simulation buildSimulation(); // builds the spacecraft, Sun/Earth/Moon hierarchy, textures, camera

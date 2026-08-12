@@ -1,6 +1,6 @@
 #pragma once
 #include "fsw/ADCS.h"
-#include "core/Cubesat.h"
+#include "core/Satellite.h"
 #include "core/SensorTelemetry.h"
 
 // EPS (electrical power subsystem) tab: battery state, live solar
@@ -10,4 +10,4 @@
 // than what FSW perceives (there's no EPS "sensor model" with its own
 // noise/dropouts in this project -- battery telemetry is read directly,
 // see PowerSample's header comment).
-void drawEpsTab(Cubesat &sat, ADCS &adcs, SensorTelemetry &telemetry, bool inEclipse);
+void drawEpsTab(Satellite &sat, ADCS &adcs, SensorTelemetry &telemetry, bool inEclipse);

@@ -35,7 +35,7 @@ enum class SystemMode
 // as ADCS::step() itself -- deliberately no HAL/interface layer here.
 // Whoever calls this (this project's harness today, a HIL rig eventually)
 // is responsible for building FSWInputs from real sensors and applying the
-// returned FSWOutputs to real actuators; see Cubesat::sampleSensors()/
+// returned FSWOutputs to real actuators; see Satellite::sampleSensors()/
 // applyActuatorCommands() for how this simulation does that.
 class FlightSoftware
 {

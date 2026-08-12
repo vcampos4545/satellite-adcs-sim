@@ -7,54 +7,54 @@
 
 namespace
 {
-struct ModeTuning
-{
-  float settlingTime;
-  float dampingRatio;
-  float omega_max;
-};
-
-// Per-mode gain/rate-limit presets. SLEW trades precision for speed (short
-// settling time, high rate cap); FINE_POINTING trades speed for precision
-// (long settling time, overdamped, tight rate cap). Everything else uses
-// the same moderate tuning the original single-mode cubesat used.
-ModeTuning tuningForMode(PointingMode mode)
-{
-  switch (mode)
+  struct ModeTuning
   {
-  case PointingMode::SLEW:
-    return {2.0f, 0.9f, 1.0f};
-  case PointingMode::FINE_POINTING:
-    return {12.0f, 1.3f, 0.08f};
-  case PointingMode::NADIR:
-  case PointingMode::SUN_POINTING:
-  case PointingMode::TARGET:
-  case PointingMode::DETUMBLE:
-  case PointingMode::REFLECT:
-  default:
-    return {5.0f, 1.0f, 0.5f};
+    float settlingTime;
+    float dampingRatio;
+    float omega_max;
+  };
+
+  // Per-mode gain/rate-limit presets. SLEW trades precision for speed (short
+  // settling time, high rate cap); FINE_POINTING trades speed for precision
+  // (long settling time, overdamped, tight rate cap). Everything else uses
+  // the same moderate tuning the original single-mode Satellite used.
+  ModeTuning tuningForMode(PointingMode mode)
+  {
+    switch (mode)
+    {
+    case PointingMode::SLEW:
+      return {2.0f, 0.9f, 1.0f};
+    case PointingMode::FINE_POINTING:
+      return {12.0f, 1.3f, 0.08f};
+    case PointingMode::NADIR:
+    case PointingMode::SUN_POINTING:
+    case PointingMode::TARGET:
+    case PointingMode::DETUMBLE:
+    case PointingMode::REFLECT:
+    default:
+      return {5.0f, 1.0f, 0.5f};
+    }
   }
-}
 
-// S such that S*x == cross(v, x) for any x -- see propagateEstimator()'s
-// F-matrix comment. Verified against glm::cross() in a headless test
-// before use; glm::mat3's 9-scalar constructor is column-major, which is
-// easy to get backwards.
-glm::mat3 skewSymmetric(const glm::vec3 &v)
-{
-  return glm::mat3(0.0f, v.z, -v.y,
-                   -v.z, 0.0f, v.x,
-                    v.y, -v.x, 0.0f);
-}
+  // S such that S*x == cross(v, x) for any x -- see propagateEstimator()'s
+  // F-matrix comment. Verified against glm::cross() in a headless test
+  // before use; glm::mat3's 9-scalar constructor is column-major, which is
+  // easy to get backwards.
+  glm::mat3 skewSymmetric(const glm::vec3 &v)
+  {
+    return glm::mat3(0.0f, v.z, -v.y,
+                     -v.z, 0.0f, v.x,
+                     v.y, -v.x, 0.0f);
+  }
 
-// Fixed, known gyro sensor spec used to seed/drive the EKF's covariance --
-// mirrors this project's simulated IMU's own default noise figures (see
-// rigidbody/sensors/IMU.h in the engine repo), since a real system's EKF
-// tuning uses the sensor's datasheet spec, not a live query against a
-// sensor object it no longer has a pointer to.
-constexpr float GYRO_NOISE_STD_RAD_S = 0.0008f;
-constexpr float GYRO_BIAS_DRIFT_STD_RAD_S = 0.0003f;
-constexpr float GYRO_BIAS_RANGE_RAD_S = 0.01f;
+  // Fixed, known gyro sensor spec used to seed/drive the EKF's covariance --
+  // mirrors this project's simulated IMU's own default noise figures (see
+  // rigidbody/sensors/IMU.h in the engine repo), since a real system's EKF
+  // tuning uses the sensor's datasheet spec, not a live query against a
+  // sensor object it no longer has a pointer to.
+  constexpr float GYRO_NOISE_STD_RAD_S = 0.0008f;
+  constexpr float GYRO_BIAS_DRIFT_STD_RAD_S = 0.0003f;
+  constexpr float GYRO_BIAS_RANGE_RAD_S = 0.01f;
 } // namespace
 
 void ADCS::configure(const HardwareConfig &hw, const glm::quat &initialAttitude)
@@ -319,8 +319,8 @@ FSWOutputs ADCS::control(const FSWInputs &in, float dt)
           maxWheelSat = std::max(maxWheelSat, std::abs(in.wheelTelemetry[i].speedRadS / wc.maxSpeedRadS));
       }
       activeDetumbleActuator = (maxWheelSat < detumbleWheelSaturationBudget)
-                                    ? DetumbleActuator::REACTION_WHEELS
-                                    : DetumbleActuator::MAGNETORQUERS_BDOT;
+                                   ? DetumbleActuator::REACTION_WHEELS
+                                   : DetumbleActuator::MAGNETORQUERS_BDOT;
     }
     else
     {
@@ -478,7 +478,7 @@ glm::vec3 ADCS::computeBdotDipoleCommand() const
   // Classic B-dot law: m = -k * dB/dt. Driving the commanded dipole
   // opposite the field's own rate of change damps body rotation without
   // ever needing an attitude estimate (Wisniewski's B-dot detumbling, the
-  // standard magnetics-only technique real cubesats use right after
+  // standard magnetics-only technique real Satellites use right after
   // deployment).
   return -bdotGain * magFieldRateBody;
 }
@@ -654,11 +654,7 @@ void ADCS::propagateEstimator(const glm::vec3 &gyroMeasured, float dt)
   glm::mat3 I3(1.0f);
   glm::mat3 phiAA = I3 - skewSymmetric(omega) * dt;
 
-  glm::mat3 newAA = phiAA * covAA * glm::transpose(phiAA)
-                   - dt * glm::transpose(covAB) * glm::transpose(phiAA)
-                   - dt * phiAA * covAB
-                   + dt * dt * covBB
-                   + gyroNoisePsd * dt * I3;
+  glm::mat3 newAA = phiAA * covAA * glm::transpose(phiAA) - dt * glm::transpose(covAB) * glm::transpose(phiAA) - dt * phiAA * covAB + dt * dt * covBB + gyroNoisePsd * dt * I3;
   glm::mat3 newAB = phiAA * covAB - dt * covBB;
   glm::mat3 newBB = covBB + gyroBiasWalkPsd * dt * I3;
 

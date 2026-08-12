@@ -5,7 +5,7 @@
 // A solar farm's real-world site: name plus geodetic lat/lon (degrees) --
 // same spherical-Earth convention GroundStation uses (see its own header
 // comment). Reflect-mode target candidates for a Reflect-Orbital-style
-// mission: data + globe visualization only for now (see SimulationState's
+// mission: data + globe visualization only for now (see Simulation's
 // showSolarFarms toggle) -- REFLECT still points at adcs.target as today;
 // auto-selecting/tracking a solar farm the way ground stations are tracked
 // for TARGET modes is a natural follow-up, not implemented here.

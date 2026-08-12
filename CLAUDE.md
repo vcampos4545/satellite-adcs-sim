@@ -4,7 +4,7 @@ You are an autonomous senior software engineer working on this project.
 
 ## Project Scope
 
-`main` is a closed-loop cubesat ADCS (attitude determination
+`main` is a closed-loop Satellite ADCS (attitude determination
 and control system) / flight-software simulation: attitude estimation
 (multiplicative EKF, star tracker primary / sun+magnetometer TRIAD
 fallback), guidance (multiple pointing modes), control (PID/LQR/cascaded,
@@ -35,8 +35,8 @@ type — only the plain-data contract in `src/fsw/FlightTypes.h`.
 owning `ADCS` and `FDIR` as peers — is a pure function of `(internal
 state, FSWInputs, dt) -> FSWOutputs`, same as `ADCS::step()`/`control()`/
 `updateEstimator()` themselves, and never dynamically allocates or holds
-an RNG. `Cubesat::sampleSensors()`/`applyActuatorCommands()`
-(`src/core/Cubesat.h`/`.cpp`) are the one place simulated hardware is
+an RNG. `Satellite::sampleSensors()`/`applyActuatorCommands()`
+(`src/core/Satellite.h`/`.cpp`) are the one place simulated hardware is
 translated to/from that contract — deliberately no HAL/interface layer.
 This is deliberate: the same code should be able to run against this
 simulation, a HIL rig, or real flight hardware without modification. Read

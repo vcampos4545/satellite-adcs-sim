@@ -97,8 +97,8 @@ target_link_libraries(fsw PUBLIC glm::glm)
 # ---------------------------------------------------------------------------
 add_executable(main
   src/core/main.cpp
-  src/core/Cubesat.cpp
-  src/core/SimulationState.cpp
+  src/core/Satellite.cpp
+  src/core/Simulation.cpp
   src/core/Fsw.cpp
   src/core/GroundStations.cpp
   src/core/SolarFarms.cpp

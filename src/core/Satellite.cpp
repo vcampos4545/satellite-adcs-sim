@@ -1,77 +1,48 @@
-#include "Cubesat.h"
+#include "Satellite.h"
 #include "Config.h"
 #include <glm/gtc/constants.hpp>
 #include <cmath>
 #include <memory>
 
-// Composite mass/inertia for the mirror+bus spacecraft, both coaxially
-// centered on the same point (a deployable-membrane layout like IKAROS's
-// real solar sail -- boom-mounted mirror, bus at the hub -- so no
-// parallel-axis term is needed; both contributions are already about the
-// shared center).
-//
-// Mirror: 18m x 18m x 5mm box. Areal density 0.1 kg/m^2 (~2x IKAROS's
-// real ~48 g/m^2 sail-only figure, accounting for a mirror needing
-// better optical/structural quality than a pure photon-pressure sail)
-// gives ~32.4 kg raw; rounded up to 35 kg for supporting boom/structure
-// margin -- representative, not a real hardware spec (none exists at
-// this scale). Standard thin-plate box inertia (thickness term
-// negligible against the 18m span).
-//
-// Bus: 0.5m cube core, 40 kg representative small-bus mass (avionics,
-// mirror-deployment mechanism). The "~2.5m envelope with panels
-// deployed" from the mission concept is the deployed solar-panel span,
-// not the structural core -- those panels are thin/low-mass, and their
-// inertia contribution is small enough to fold into the bus's own
-// margin rather than model as a separate element. Standard cube inertia.
 namespace
 {
-constexpr float MIRROR_SPAN_M = 18.0f;
-constexpr float MIRROR_THICKNESS_M = 0.005f;
-constexpr float MIRROR_AREAL_DENSITY_KGM2 = 0.1f;
-constexpr float MIRROR_MASS_KG = 35.0f; // rounded up from areal-density estimate for structure margin
-constexpr float BUS_CORE_SIDE_M = 0.5f;
-constexpr float BUS_MASS_KG = 40.0f;
-constexpr float TOTAL_MASS_KG = MIRROR_MASS_KG + BUS_MASS_KG;
+  constexpr float MIRROR_SPAN_M = 18.0f;
+  constexpr float MIRROR_THICKNESS_M = 0.005f;
+  constexpr float MIRROR_AREAL_DENSITY_KGM2 = 0.1f;
+  constexpr float MIRROR_MASS_KG = 35.0f; // rounded up from areal-density estimate for structure margin
+  constexpr float BUS_CORE_SIDE_M = 0.5f;
+  constexpr float BUS_MASS_KG = 40.0f;
+  constexpr float TOTAL_MASS_KG = MIRROR_MASS_KG + BUS_MASS_KG;
 
-glm::mat3 computeCompositeInertiaTensor()
-{
-  // Thin-plate box: Ix = Iy = m*(L^2 + t^2)/12 ~= m*L^2/12 (t << L),
-  // Iz = m*(Lx^2 + Ly^2)/12 = m*L^2/6 for a square plate.
-  float mirrorIxy = MIRROR_MASS_KG * (MIRROR_SPAN_M * MIRROR_SPAN_M + MIRROR_THICKNESS_M * MIRROR_THICKNESS_M) / 12.0f;
-  float mirrorIz = MIRROR_MASS_KG * (MIRROR_SPAN_M * MIRROR_SPAN_M + MIRROR_SPAN_M * MIRROR_SPAN_M) / 12.0f;
+  glm::mat3 computeCompositeInertiaTensor()
+  {
+    // Thin-plate box: Ix = Iy = m*(L^2 + t^2)/12 ~= m*L^2/12 (t << L),
+    // Iz = m*(Lx^2 + Ly^2)/12 = m*L^2/6 for a square plate.
+    float mirrorIxy = MIRROR_MASS_KG * (MIRROR_SPAN_M * MIRROR_SPAN_M + MIRROR_THICKNESS_M * MIRROR_THICKNESS_M) / 12.0f;
+    float mirrorIz = MIRROR_MASS_KG * (MIRROR_SPAN_M * MIRROR_SPAN_M + MIRROR_SPAN_M * MIRROR_SPAN_M) / 12.0f;
 
-  // Cube: I = m*s^2/6, all axes.
-  float busI = BUS_MASS_KG * (BUS_CORE_SIDE_M * BUS_CORE_SIDE_M) / 6.0f;
+    // Cube: I = m*s^2/6, all axes.
+    float busI = BUS_MASS_KG * (BUS_CORE_SIDE_M * BUS_CORE_SIDE_M) / 6.0f;
 
-  return glm::mat3(
-      mirrorIxy + busI, 0.0f, 0.0f,
-      0.0f, mirrorIxy + busI, 0.0f,
-      0.0f, 0.0f, mirrorIz + busI);
-}
+    return glm::mat3(
+        mirrorIxy + busI, 0.0f, 0.0f,
+        0.0f, mirrorIxy + busI, 0.0f,
+        0.0f, 0.0f, mirrorIz + busI);
+  }
 } // namespace
 
-Cubesat buildCubesatPyramid(PhysicsWorld &world, HardwareConfig &outHw)
+Satellite buildSatellite(PhysicsWorld &world, HardwareConfig &outHw)
 {
-  Cubesat sat;
+  Satellite sat;
   sat.body = world.createBody(
       RigidBodyShape::BOX,
       glm::vec3(MIRROR_SPAN_M, MIRROR_SPAN_M, MIRROR_THICKNESS_M),
       MIRROR_MASS_KG);
 
-  // Override the shape-derived (mirror-plate-only) mass/inertia with the
-  // true composite mirror+bus values computed above -- see
-  // RigidBody::setInertiaTensor()'s own header comment: this is exactly
-  // its intended use (a scenario with a more accurate measured/derived
-  // inertia than the single-shape primitive can compute).
   sat.body->setMass(TOTAL_MASS_KG);
   sat.body->setInertiaTensor(computeCompositeInertiaTensor());
 
-  // Real orbital position (overwritten every frame from orbitState, in
-  // ECI meters -- see main()) means this body's Z genuinely crosses zero
-  // twice per orbit around an Earth centered at the world origin. The
-  // engine's ground-collision resolution assumes a literal Z=0 ground
-  // plane, which doesn't exist here, so this body opts out of it.
+  // TODO: Get rid of this, modify in rigid body sim
   sat.body->groundCollisionEnabled = false;
 
   // IMU board mounted in a corner of the bus, not at the center of mass --
@@ -83,7 +54,7 @@ Cubesat buildCubesatPyramid(PhysicsWorld &world, HardwareConfig &outHw)
   // spaced 90 degrees apart in azimuth. Mounted in a small cluster near the
   // +Z face rather than at the body center, matching how a real RWA pyramid
   // bracket is bolted to one panel. Mount offsets scaled up from the old
-  // 1U-cubesat's mm-scale mounts to this spacecraft's 0.5m bus core.
+  // 1U-Satellite's mm-scale mounts to this spacecraft's 0.5m bus core.
   const float skew = glm::radians(45.0f);
   const float mountRadius = 0.15f;
   const float mountHeight = 0.2f;
@@ -100,22 +71,9 @@ Cubesat buildCubesatPyramid(PhysicsWorld &world, HardwareConfig &outHw)
                        mountRadius * std::sin(azimuth),
                        mountHeight);
 
-    // Real smallsat-class reaction wheel sizing (~1 Nms momentum, ~20-30
-    // mNm torque -- e.g. Blue Canyon RWp500 / Sinclair RW-1.0 class),
-    // sized to the *bus's* mass/power/volume budget (75kg, see
-    // computeCompositeInertiaTensor() above) rather than the mirror
-    // payload's own huge inertia -- a real smallsat buys an off-the-shelf
-    // wheel that fits its bus, it doesn't size a custom wheel to the
-    // payload. wheelInertia is back-derived to keep momentum capacity
-    // consistent with that class at maxSpeedRadS
-    // (1.0 Nms / 628 rad/s ~= 1.6e-3 kg*m^2). At this modest torque
-    // against the mirror's ~950-1900 kg*m^2 inertia, ADCS's own
-    // torque-aware autoTune() (see ADCS.cpp/Controllers.cpp) is what
-    // keeps the control loop from demanding more than this can deliver
-    // -- settling is correspondingly slow, not a bug.
     const float maxTorqueNm = 0.025f;
-    const float maxSpeedRadS = 6000.0f * (2.0f * glm::pi<float>() / 60.0f); // 6000 RPM max -- motor speed doesn't scale with spacecraft size
-    const float wheelInertia = 1.6e-3f;                                     // kg*m^2 -- ~1.0 Nms momentum capacity at maxSpeedRadS
+    const float maxSpeedRadS = 6000.0f * (2.0f * glm::pi<float>() / 60.0f);
+    const float wheelInertia = 1.6e-3f;
 
     auto wheel = std::make_unique<ReactionWheel>(mountPos, axis, maxTorqueNm, maxSpeedRadS, wheelInertia);
 
@@ -125,7 +83,7 @@ Cubesat buildCubesatPyramid(PhysicsWorld &world, HardwareConfig &outHw)
   }
 
   // Magnetorquer cluster: 3 mutually orthogonal rods along the body axes,
-  // the standard cubesat layout (unlike the wheels' skewed pyramid, there's
+  // the standard Satellite layout (unlike the wheels' skewed pyramid, there's
   // no benefit to tilting a torque rod -- it has no momentum to distribute
   // across axes, so straight body-axis alignment gives the cleanest
   // allocation). Mounts scaled up to the 0.5m bus core; 15 A*m^2 matches a
@@ -155,7 +113,7 @@ Cubesat buildCubesatPyramid(PhysicsWorld &world, HardwareConfig &outHw)
   // keep the tracker away from the sun-facing/payload side.
 
   // Solar panels: one body-mounted cell array per face, the standard
-  // cubesat layout (vs. a single sun-tracking array) -- whichever face(s)
+  // Satellite layout (vs. a single sun-tracking array) -- whichever face(s)
   // happen to be sunward generate, the rest don't, so generation is a
   // direct function of attitude rather than something a gimbal hides.
   // panelAreaM2 is a representative deployed-panel dimension (not
@@ -172,7 +130,7 @@ Cubesat buildCubesatPyramid(PhysicsWorld &world, HardwareConfig &outHw)
     sat.solarPanels.emplace_back(n, panelAreaM2, panelEfficiency);
 
   // Battery: a representative Li-ion pack sized up for this bus (40 Wh,
-  // vs. the old 1U-cubesat's 10 Wh) -- bigger bus means more housekeeping
+  // vs. the old 1U-Satellite's 10 Wh) -- bigger bus means more housekeeping
   // and actuator draw (see the new wheel/torquer sizing above), while
   // still being small enough that a deliberately harsh test (Simulation
   // tab's "Drain Battery" button, eclipse, or a long run with poor
@@ -184,7 +142,7 @@ Cubesat buildCubesatPyramid(PhysicsWorld &world, HardwareConfig &outHw)
   return sat;
 }
 
-FSWInputs Cubesat::sampleSensors(float dt)
+FSWInputs Satellite::sampleSensors(float dt)
 {
   FSWInputs in;
 
@@ -219,7 +177,7 @@ FSWInputs Cubesat::sampleSensors(float dt)
   return in;
 }
 
-void Cubesat::applyActuatorCommands(const FSWOutputs &out)
+void Satellite::applyActuatorCommands(const FSWOutputs &out)
 {
   for (int i = 0; i < NUM_WHEELS; i++)
     wheels[i]->commandTorque(out.wheelCommands[i].torqueNm);
@@ -227,7 +185,7 @@ void Cubesat::applyActuatorCommands(const FSWOutputs &out)
     magnetorquers[i]->commandDipoleMoment(out.torquerCommands[i].momentAm2);
 }
 
-float Cubesat::updatePower(float dt, const FSWOutputs &out)
+float Satellite::updatePower(float dt, const FSWOutputs &out)
 {
   float genW = 0.0f;
   if (!inEclipse)

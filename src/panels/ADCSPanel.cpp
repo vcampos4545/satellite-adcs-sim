@@ -9,7 +9,7 @@
 #include "VisualizationPanel.h"
 #include <imgui.h>
 
-void drawADCSPanel(FlightSoftware &flightSoftware, Cubesat &sat,
+void drawADCSPanel(FlightSoftware &flightSoftware, Satellite &sat,
                    SensorTelemetry &telemetry, SimControls &sim,
                    EpochControls &epoch, VisualizationSettings &vis,
                    const OrbitState &orbitState, const Texture &earthTexture,
@@ -21,7 +21,7 @@ void drawADCSPanel(FlightSoftware &flightSoftware, Cubesat &sat,
 
   ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowSize(ImVec2(380, 560), ImGuiCond_FirstUseEver);
-  ImGui::Begin("CubeSat ADCS");
+  ImGui::Begin("Satellite ADCS");
 
   if (ImGui::BeginTabBar("ADCSTabs"))
   {
