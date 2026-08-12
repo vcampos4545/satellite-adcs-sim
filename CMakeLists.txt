@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(satellite-adcs-sim)
+project(main)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -69,7 +69,7 @@ target_link_libraries(imgui PUBLIC glfw)
 # fallback when it's blinded/slewing too fast), B-dot detumble, cross-
 # product-law desaturation, and the FDIR mode-manager/fault layer above all
 # of it. Split into its own library (not just object files baked into the
-# satellite-adcs-sim executable) so tests/ can link exactly this and
+# main executable) so tests/ can link exactly this and
 # nothing else -- proving, by construction, that FSW logic never needs vgl,
 # imgui, or even `rigidbody` (see ADCS.h/FDIR.h's own "hardware-abstracted"
 # comments; only glm, for plain vector/quaternion math).
@@ -83,7 +83,7 @@ add_library(fsw STATIC
 # PUBLIC include dir is src/fsw itself (not all of src) -- fsw's public
 # interface is only its own headers, matching the comment above ("tests/
 # can link exactly this and nothing else"): a consumer of libfsw (tests/,
-# satellite-adcs-sim) sees ADCS.h/FDIR.h/Controllers.h/FlightTypes.h as
+# main) sees ADCS.h/FDIR.h/Controllers.h/FlightTypes.h as
 # unprefixed includes, not the rest of this project's source tree.
 target_include_directories(fsw PUBLIC src/fsw)
 target_link_libraries(fsw PUBLIC glm::glm)
@@ -95,12 +95,13 @@ target_link_libraries(fsw PUBLIC glm::glm)
 # relative to spacecraft-dynamics-sim (the engine) and constellation-sim
 # (orbit-level mission design).
 # ---------------------------------------------------------------------------
-add_executable(satellite-adcs-sim
-  src/core/satellite_adcs_sim.cpp
+add_executable(main
+  src/core/main.cpp
   src/core/Cubesat.cpp
   src/core/SimulationState.cpp
   src/core/Fsw.cpp
   src/core/GroundStations.cpp
+  src/core/SolarFarms.cpp
   src/rendering/SatelliteRenderer.cpp
   src/rendering/MagneticFieldRenderer.cpp
   src/rendering/OrbitRenderer.cpp
@@ -120,15 +121,15 @@ add_executable(satellite-adcs-sim
 # reaches across the core/fsw/rendering/panels split via folder-qualified
 # includes (e.g. "fsw/ADCS.h", "rendering/OrbitRenderer.h"), unlike fsw's
 # own narrower PUBLIC include dir above.
-target_include_directories(satellite-adcs-sim PRIVATE src)
-target_link_libraries(satellite-adcs-sim PRIVATE fsw rigidbody vgl imgui)
+target_include_directories(main PRIVATE src)
+target_link_libraries(main PRIVATE fsw rigidbody vgl imgui)
 
 # Absolute path to resources/ (textures, ...) baked in at compile time --
 # this is a dev sim run straight from the build tree, not an installed/
 # packaged product, so an absolute source-tree path is simpler than a
 # POST_BUILD copy-next-to-the-executable step and works regardless of the
 # working directory the built binary is launched from.
-target_compile_definitions(satellite-adcs-sim PRIVATE
+target_compile_definitions(main PRIVATE
   RESOURCES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/resources")
 
 # ---------------------------------------------------------------------------

@@ -33,6 +33,13 @@ void drawSimulationTab(SimControls &sim, EpochControls &epoch,
     std::uniform_real_distribution<float> d(-sim.tumbleKickRadS, sim.tumbleKickRadS);
     body->angularVelocity = glm::vec3(d(tumbleRng), d(tumbleRng), d(tumbleRng));
   }
+  ImGui::SameLine();
+  if (ImGui::Button("Detumble Now"))
+    body->angularVelocity = glm::vec3(0.0f);
+  ImGui::TextDisabled("Directly zeroes the rigid body's angular velocity -- a debug/reset action, not");
+  ImGui::TextDisabled("something real flight software could do; ADCS's own DETUMBLE mode actually damps");
+  ImGui::TextDisabled("rate via actuators over time, and also enters/exits it on its own above a rate");
+  ImGui::TextDisabled("threshold -- see the FSW tab.");
 
   ImGui::SeparatorText("Reaction Wheel Faults");
   ImGui::TextDisabled("Manual only -- pick a wheel and a fault, same healthFactor model FDIR reacts to.");
@@ -68,9 +75,11 @@ void drawSimulationTab(SimControls &sim, EpochControls &epoch,
     ImGui::TextDisabled("Idle");
 
   if (ImGui::Button("Desaturate Wheels Now"))
-    adcs.requestDesaturation();
-  ImGui::SameLine();
-  ImGui::TextDisabled("(runs in the background until wheel momentum is low; keeps pointing)");
+    for (auto *w : wheels)
+      w->currentSpeed = 0.0f;
+  ImGui::TextDisabled("Directly zeroes each wheel's speed (momentum) -- a debug/reset action, not");
+  ImGui::TextDisabled("something real flight software could do; ADCS's own desaturation actually bleeds");
+  ImGui::TextDisabled("momentum off via magnetorquers over time -- see the auto-trigger controls below.");
 
   ImGui::Checkbox("Auto-desaturate when a wheel gets close to saturated", &adcs.desatAutoTriggerEnabled);
   ImGui::DragFloat("Auto-trigger threshold (fraction)", &adcs.desatTriggerSaturation, 0.01f, 0.5f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);

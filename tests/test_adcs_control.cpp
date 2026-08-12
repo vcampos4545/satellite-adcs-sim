@@ -192,7 +192,7 @@ int main()
 
     std::array<float, NUM_WHEELS> wheelSpeed{};
     wheelSpeed[0] = 0.85f * hw.wheels[0].maxSpeedRadS; // only wheel 0 near saturation -- an even split
-                                                        // across the pyramid cancels to ~zero net momentum
+                                                       // across the pyramid cancels to ~zero net momentum
 
     glm::vec3 trueRate(0.0f);
     glm::mat3 invI = glm::inverse(hw.busInertiaTensor);
@@ -245,7 +245,7 @@ int main()
 
   // TRIAD fallback must refuse when the sun reference isn't actually
   // available (e.g. the harness gates SunSensor::Reading.valid to false
-  // during eclipse -- see satellite_adcs_sim.cpp's own comment on this,
+  // during eclipse -- see main.cpp's own comment on this,
   // since SunSensor itself has no eclipse model). computeTriadFallback
   // requires in.sunSensor.valid; with the star tracker also down (the
   // scenario TRIAD fallback exists for in the first place), ADCS must not
@@ -261,8 +261,8 @@ int main()
     FSWInputs in;
     in.imu = {glm::vec3(0.0f), glm::vec3(0.0f)};
     in.mag = {glm::vec3(0, 0, 3e-5f), true};
-    in.star = {glm::quat(1, 0, 0, 0), false};    // star tracker down
-    in.sunSensor = {glm::vec3(0, 1, 0), false};  // sun reference unavailable (eclipse)
+    in.star = {glm::quat(1, 0, 0, 0), false};   // star tracker down
+    in.sunSensor = {glm::vec3(0, 1, 0), false}; // sun reference unavailable (eclipse)
     in.power = {1.0f, 8.4f};
     in.spacecraftPositionWorld = glm::vec3(0.0f);
     for (int w = 0; w < NUM_WHEELS; w++)

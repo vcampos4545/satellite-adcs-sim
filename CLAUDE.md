@@ -1,10 +1,10 @@
-# Autonomous Engineering Agent — satellite-adcs-sim
+# Autonomous Engineering Agent — main
 
 You are an autonomous senior software engineer working on this project.
 
 ## Project Scope
 
-`satellite-adcs-sim` is a closed-loop cubesat ADCS (attitude determination
+`main` is a closed-loop cubesat ADCS (attitude determination
 and control system) / flight-software simulation: attitude estimation
 (multiplicative EKF, star tracker primary / sun+magnetometer TRIAD
 fallback), guidance (multiple pointing modes), control (PID/LQR/cascaded,
@@ -18,8 +18,8 @@ section), and an EPS (solar panels + battery, eclipse-gated) model — for
 It builds on [`spacecraft-dynamics-sim`](https://github.com/vcampos4545/spacecraft-dynamics-sim)
 (a sibling repo, fetched via CMake `FetchContent`, not vendored), a
 generic rigid-body physics engine with no spacecraft- or flight-software-
-specific code. This project explicitly does **not** do orbit-*level
-mission design* (constellation architecture, coverage/access analysis
+specific code. This project explicitly does **not** do orbit-_level
+mission design_ (constellation architecture, coverage/access analysis
 across many satellites, station-keeping maneuver planning, conjunction
 screening) — the boundary is about scale (one vehicle vs. many), not
 about whether orbital motion exists; that multi-satellite scale problem is
@@ -68,7 +68,7 @@ full detail on each step):
    (`spacecraft-dynamics-sim`) changed, force a fresh `FetchContent` fetch
    (`rm -rf build`). Run the zero-allocation grep check on any
    `src/fsw/ADCS.*`/`src/fsw/FDIR.*`/`src/fsw/FlightSoftware.*` change. Run `ctest`. A throwaway headless
-   scratch program is the right *first* verification step while
+   scratch program is the right _first_ verification step while
    iterating — but don't stop there (see step 4).
 4. **Add to the test suite.** Every feature that changes FSW behavior
    gets a **persistent** test in `tests/`, not just the scratch program
@@ -187,7 +187,7 @@ New behavior (see "Core Behavior" step 4 and `docs/TESTING.md` in full):
   are enough, matching this project's "only pull in what's needed"
   dependency posture.
 - Test the plain-data FSW interface (`fsw` library target — `FSWInputs ->
-  FSWOutputs`, `FdirInputs -> PointingMode`), not the simulation harness.
+FSWOutputs`, `FdirInputs -> PointingMode`), not the simulation harness.
   `tests/test_common.h`'s `makeTestHardwareConfig()` builds a
   representative `HardwareConfig` for exactly this.
 - A scratch program compiled by hand against the built objects is still
@@ -202,13 +202,13 @@ New behavior (see "Core Behavior" step 5):
 - `docs/ALGORITHMS.md` is the standing reference for the math/algorithms/
   modeling assumptions behind this project's flight software and physical
   models — governing equations, units, frames, sign conventions, and
-  *why* a simplification was made (e.g. EPS's no-eclipse assumption,
+  _why_ a simplification was made (e.g. EPS's no-eclipse assumption,
   Battery's linear voltage-vs-SOC model). Update it whenever a change
   touches the math itself, not for pure refactors.
 - `docs/TESTING.md` documents the test-suite conventions themselves (what
   belongs in `tests/` vs. a scratch check, how to derive thresholds, the
-  zero-allocation check) — update it if the *testing convention* changes,
-  as opposed to `docs/ALGORITHMS.md` for the *physics/algorithm* content.
+  zero-allocation check) — update it if the _testing convention_ changes,
+  as opposed to `docs/ALGORITHMS.md` for the _physics/algorithm_ content.
 
 ## Git Rules
 

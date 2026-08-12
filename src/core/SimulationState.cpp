@@ -12,6 +12,7 @@
 #include <rigidbody/orbit/OrbitTime.h>
 #include <rigidbody/orbit/OrbitalElements.h>
 #include <rigidbody/orbit/OrbitForceModel.h>
+#include <random>
 
 SimulationState::SimulationState(float tumbleKickRadS)
     : camera(1.0f, 0.0f, 0.0f, glm::vec3(0.0f)), // reassigned to real values in buildSimulationState()
@@ -24,6 +25,15 @@ SimulationState buildSimulationState()
   SimulationState sim(Config::TUMBLE_KICK_RAD_S);
 
   sim.spacecraft = buildCubesatPyramid(sim.world, sim.hwConfig);
+
+  // Deployment: a real cubesat separates from its dispenser with real
+  // nonzero angular momentum -- same per-axis uniform kick shape as the
+  // manual "Kick into random tumble" button, applied once here instead of
+  // on a button press. ADCS's own automatic detumble entry (see ADCS.h's
+  // detumbleEntryRateRadS) is what's expected to react to this.
+  std::mt19937 deployRng(std::random_device{}());
+  std::uniform_real_distribution<float> deployTumble(-Config::DEPLOYMENT_TUMBLE_RATE_RAD_S, Config::DEPLOYMENT_TUMBLE_RATE_RAD_S);
+  sim.spacecraft.body->angularVelocity = glm::vec3(deployTumble(deployRng), deployTumble(deployRng), deployTumble(deployRng));
 
   sim.earthTexture.loadFromFile(std::string(RESOURCES_DIR) + "/textures/earth.jpg");
   sim.sunTexture.loadFromFile(std::string(RESOURCES_DIR) + "/textures/sun.jpg");
@@ -187,13 +197,15 @@ void SimulationState::draw(GUI &gui, Fsw &fsw, int &selectedPassIndex)
     drawGroundFootprint(gui, world.orbitalState(spacecraft.body).position, glm::radians(Config::FOOTPRINT_MIN_ELEVATION_DEG));
   if (vis.showGroundStations)
     drawGroundStations(gui, OrbitFrames::gmstRad(currentJdNow));
+  if (vis.showSolarFarms)
+    drawSolarFarms(gui, OrbitFrames::gmstRad(currentJdNow));
 
   if (vis.showSatellite)
   {
     drawSatelliteWireframe(gui, spacecraft.body);
     drawReactionWheels(gui, spacecraft.wheels, spacecraft.body);
     drawMagnetorquers(gui, spacecraft.magnetorquers, spacecraft.body);
-    drawMirror(gui, spacecraft.body);
+    drawBus(gui, spacecraft.body);
     if (adcs.mode == PointingMode::REFLECT)
       drawSunReflection(gui, spacecraft.body, sunPositionNow);
   }

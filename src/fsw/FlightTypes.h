@@ -8,7 +8,7 @@
 // values later, real flight hardware eventually. No rigidbody/* includes
 // here on purpose: this header, and everything ADCS.h/.cpp builds on top
 // of it, must never know a RigidBody or PhysicsWorld exists. The
-// simulation harness (satellite_adcs_sim.cpp) is the only place that
+// simulation harness (main.cpp) is the only place that
 // bridges between this and the actual simulation objects.
 //
 // Fixed sizes rather than runtime-sized containers, matching the actual
@@ -108,7 +108,7 @@ struct WheelTelemetry
 // doesn't model an EPS telemetry failure mode, so it's always available.
 struct PowerSample
 {
-  float batterySoc = 1.0f;     // 0-1, state of charge
+  float batterySoc = 1.0f;      // 0-1, state of charge
   float batteryVoltageV = 0.0f; // V
 };
 
@@ -125,7 +125,7 @@ struct FSWInputs
   // NADIR/TARGET/SUN_POINTING/REFLECT guidance to compute a pointing
   // direction relative to the spacecraft's own position. This sim's
   // harness feeds it the real orbital position (ECI, meters, Earth's
-  // center at the origin -- see satellite_adcs_sim.cpp's OrbitState/
+  // center at the origin -- see main.cpp's OrbitState/
   // OrbitPropagator), the same way a real flight computer's guidance
   // would read its own navigation solution.
   glm::vec3 spacecraftPositionWorld{0.0f};

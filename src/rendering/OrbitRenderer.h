@@ -2,6 +2,7 @@
 #include <vgl/vgl.h>
 #include <rigidbody/orbit/OrbitState.h>
 #include "core/GroundStations.h"
+#include "core/SolarFarms.h"
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -9,7 +10,7 @@
 // predicted orbit path, the ground-coverage footprint (3D circle + 2D
 // minimap overlay), and the 2D ground-track minimap itself. All operate in
 // real ECI meters -- PhysicsWorld's own frame here *is* ECI, so there's no
-// separate render scale/offset to track (see satellite_adcs_sim.cpp's
+// separate render scale/offset to track (see main.cpp's
 // ORBIT VISUALIZATION comment).
 // ---------------------------------------------------------------------------
 
@@ -136,3 +137,11 @@ void drawGroundTrackMinimap(const Texture &earthTexture,
 // as "the green-highlighted station among the white ones," not a
 // separately-styled marker of its own.
 void drawGroundStations(GUI &gui, double thetaGstRad);
+
+// Solar farm markers: same shape as drawGroundStations, one sphere per
+// SOLAR_FARMS entry at its real, currently-rotated ECI position
+// (solarFarmPositionEci) -- a gold tone distinct from ground stations'
+// neutral gray so both marker sets read separately on the globe. Reflect-
+// Orbital mission candidate targets; not wired into REFLECT's auto-
+// targeting (see SolarFarms.h's own header comment).
+void drawSolarFarms(GUI &gui, double thetaGstRad);

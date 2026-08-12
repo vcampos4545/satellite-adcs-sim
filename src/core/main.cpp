@@ -38,7 +38,7 @@ int main()
     glm::vec2 mousePos = gui.getMousePosition();
     glm::vec2 mouseDelta = mousePos - lastMousePos;
     lastMousePos = mousePos;
-    sim.handleCameraInput(gui, mouseDelta, gui.getScrollDelta());
+    glm::vec2 scrollDelta = gui.getScrollDelta();
 
     // One fixed-rate loop drives sim.step() (orbit propagation +
     // PhysicsWorld::step(), zero-order hold against the previous cycle's
@@ -54,6 +54,8 @@ int main()
       sim.step(Config::TIME_STEP_S);
       fsw.step(Config::TIME_STEP_S);
     }
+
+    sim.handleCameraInput(gui, mouseDelta, scrollDelta);
 
     sim.refreshGroundStationPasses(dt);
 

@@ -16,23 +16,23 @@
 // being a one-off scratch check.
 inline int g_testFailures = 0;
 
-#define CHECK(cond, ...)                                  \
-  do                                                       \
-  {                                                        \
-    bool _pass = (cond);                                   \
-    std::printf("[%s] ", _pass ? "PASS" : "FAIL");          \
-    std::printf(__VA_ARGS__);                               \
-    std::printf("\n");                                       \
-    if (!_pass)                                                \
-      g_testFailures++;                                         \
+#define CHECK(cond, ...)                           \
+  do                                               \
+  {                                                \
+    bool _pass = (cond);                           \
+    std::printf("[%s] ", _pass ? "PASS" : "FAIL"); \
+    std::printf(__VA_ARGS__);                      \
+    std::printf("\n");                             \
+    if (!_pass)                                    \
+      g_testFailures++;                            \
   } while (0)
 
-#define TEST_MAIN_END()                                                        \
+#define TEST_MAIN_END()                                                                  \
   std::printf("\n%s\n", g_testFailures == 0 ? "ALL TESTS PASSED" : "SOME TESTS FAILED"); \
   return g_testFailures == 0 ? 0 : 1;
 
 // A representative 4-wheel pyramid + 3-axis torquer HardwareConfig, the
-// same shape buildCubesatPyramid() in satellite_adcs_sim.cpp builds --
+// same shape buildCubesatPyramid() in main.cpp builds --
 // duplicated here (not shared with the harness) deliberately: ADCS is
 // hardware-abstracted specifically so it never needs the harness/sim to
 // exist at all, and a test suite that had to link the GUI harness to

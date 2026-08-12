@@ -12,7 +12,11 @@
 #include <vector>
 
 // ---------------------------------------------------------------------------
-// Full cubesat ADCS: pointing modes (Nadir/Sun/Detumble/Target/Slew/Fine/Reflect),
+// A Reflect-Orbital-style mirror spacecraft: an 18m x 18m deployable
+// mirror (the RigidBody itself) with a much smaller bus at its center --
+// composite mass/inertia computed in buildCubesatPyramid() (see its own
+// comment), not just a resized bounding box. Full cubesat-style ADCS:
+// pointing modes (Nadir/Sun/Detumble/Target/Slew/Fine/Reflect),
 // an IMU and magnetometer as the only sensors the flight software ever
 // reads (see ADCS.h/.cpp), a 4-wheel reaction wheel pyramid plus a 3-axis
 // magnetorquer cluster as actuators, and randomly-occurring reaction wheel

@@ -30,7 +30,7 @@ Every new feature that touches FSW logic (a new pointing mode, a new FDIR
 fault, a new control law, a new physical model like EPS) should leave
 behind a **persistent** test in `tests/`, not just a one-off `/tmp` program
 compiled by hand and thrown away after confirming it works once. The
-scratch-program style is still the right *first* step while developing —
+scratch-program style is still the right _first_ step while developing —
 fast iteration, no build-system changes needed — but once the behavior is
 correct, promote the check into `tests/` before considering the feature
 done. If it was worth verifying once, it's worth re-verifying automatically
@@ -52,7 +52,7 @@ What "belongs in `tests/`" looks like, concretely:
 - **Test the plain-data FSW interface** (`FSWInputs -> FSWOutputs`, or
   `FdirInputs -> PointingMode`), not the simulation harness — this is what
   `tests/test_common.h`'s `makeTestHardwareConfig()` is for. A test that
-  needs `satellite_adcs_sim.cpp`'s GUI/harness to build is testing the
+  needs `main.cpp`'s GUI/harness to build is testing the
   wrong layer; if it's provably true of `fsw` alone, it should be checked
   against `fsw` alone (see `tests/CMakeLists.txt`'s comment on why FSW
   tests only need to link `fsw`, not `rigidbody`/`vgl`/`imgui`).

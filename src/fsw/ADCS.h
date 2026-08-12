@@ -11,16 +11,19 @@ enum class ControllerType
   CASCADED
 };
 
-// Which hardware DETUMBLE damps rate with. Reaction wheels are the default
-// (fast, precise, works regardless of field strength); MAGNETORQUERS_BDOT
-// switches to the classic B-dot law (m = -k * dB/dt, sensed by the
-// magnetometer) instead -- the standard low-cost/low-mass way a real
-// cubesat detumbles right after deployment, before wheels are even trusted.
-// Only meaningful while mode == DETUMBLE; ignored otherwise.
+// Which hardware DETUMBLE damps rate with. AUTO (the default) decides each
+// cycle from current wheel saturation -- see ADCS::detumbleWheelSaturationBudget
+// and ADCS::activeDetumbleActuator -- using reaction wheels (fast, precise)
+// while they have budget and handing off to the classic B-dot law
+// (m = -k * dB/dt, sensed by the magnetometer) via MAGNETORQUERS_BDOT once
+// they don't, the standard low-cost/low-mass way a real cubesat detumbles.
+// REACTION_WHEELS/MAGNETORQUERS_BDOT remain selectable as explicit manual
+// overrides. Only meaningful while mode == DETUMBLE; ignored otherwise.
 enum class DetumbleActuator
 {
   REACTION_WHEELS,
-  MAGNETORQUERS_BDOT
+  MAGNETORQUERS_BDOT,
+  AUTO
 };
 
 // Flight software for a 3-axis-stabilized cubesat: attitude estimation
@@ -43,7 +46,7 @@ public:
   // do NOT read this directly; see `effectiveMode` below.
   PointingMode mode = PointingMode::TARGET;
   ControllerType controllerType = ControllerType::PID;
-  DetumbleActuator detumbleActuator = DetumbleActuator::REACTION_WHEELS;
+  DetumbleActuator detumbleActuator = DetumbleActuator::AUTO;
 
   // What guidance/control actually execute this cycle -- `mode` unless a
   // fault monitor has overridden it. Set from *outside* this class (see
@@ -183,9 +186,35 @@ public:
   float desatStopSaturation = 0.3f;    // ...and the (lower, hysteresis) level a pass ends at
   float desatGain = 0.0f;              // tuned at configure() from the magnetorquers' max moment
 
-  // Force-starts a desaturation pass regardless of current wheel
-  // saturation -- what a UI panel's "Desaturate Wheels Now" button calls.
-  void requestDesaturation() { desatActive = true; }
+  // Automatic detumble entry: ADCS's own "we're tumbling too fast to
+  // usefully point, detumble first" behavior -- the routine, expected
+  // post-deployment case. Deliberately separate from FDIR's EXCESS_RATE
+  // fault (a higher-threshold anomaly backstop that latches until a
+  // ground-command clears it): this is non-latching and self-clearing,
+  // for tumbling that's expected, not anomalous.
+  // detumbleEntryRateRadS must clear SLEW's own commanded-rate cap
+  // (ModeTuning::omega_max, ADCS.cpp's tuningForMode() -- 1.0 rad/s) with
+  // real margin: Controllers.cpp's own comment confirms an aggressive
+  // slew genuinely pins body rate near that cap, not just a
+  // theoretical/unreached ceiling, so a threshold below it would false-
+  // trigger DETUMBLE mid-maneuver. 1.3 clears it with margin while
+  // staying below FDIR's excessRateRadS (2.0) -- see test_detumble.cpp's
+  // exact-boundary check against SLEW's own omega_max.
+  bool detumbleAutoTriggerEnabled = true;
+  float detumbleEntryRateRadS = 1.3f; // |rate| above this with mode != DETUMBLE auto-commands DETUMBLE
+  float detumbleExitRateRadS = 0.1f;  // ...and the (lower, hysteresis) rate an auto-entered detumble exits at, back to SUN_POINTING
+
+  // AUTO detumble actuator selection: use reaction wheels while their peak
+  // saturation stays under this budget (fast/precise, and typically have
+  // full budget available right after deployment), hand off to
+  // magnetorquers once it's reached.
+  float detumbleWheelSaturationBudget = 0.3f;
+
+  // What DetumbleActuator::AUTO resolved to *this cycle* -- exposed for
+  // telemetry/UI the same reason `effectiveMode` is: "commanded AUTO, but
+  // actually driving wheels/magnetorquers" shouldn't be invisible. Mirrors
+  // `detumbleActuator` directly when it isn't AUTO.
+  DetumbleActuator activeDetumbleActuator = DetumbleActuator::MAGNETORQUERS_BDOT;
 
 public:
   ADCS() = default;
@@ -249,6 +278,11 @@ private:
   LQRController lqr;
   CascadedController cascaded;
 
+  // Tracks whether the *current* DETUMBLE was auto-commanded (vs.
+  // manually chosen), so auto-exit never reverts a manual choice -- see
+  // checkAutoDetumbleEntry().
+  bool detumbleAutoEntered_ = false;
+
   PointingMode lastTunedMode; // re-tune only when mode actually changes
   float detumbleKd = 0.0f;    // rate-damping gain for DETUMBLE, derived from bus inertia at configure()
 
@@ -283,6 +317,10 @@ private:
   void updateDesaturation(const FSWInputs &in);
   void allocateActuators();
   FSWOutputs buildOutputs() const;
+
+  // Autonomous DETUMBLE entry/exit from bias-corrected body rate -- see
+  // the detumbleEntry/ExitRateRadS field comments above.
+  void checkAutoDetumbleEntry(const glm::vec3 &rateBody);
 
   // DETUMBLE's control laws: pure rate damping via wheels, or the B-dot law
   // via magnetorquers -- see DetumbleActuator.

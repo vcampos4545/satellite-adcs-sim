@@ -16,6 +16,10 @@ add_executable(test_flight_software test_flight_software.cpp)
 target_link_libraries(test_flight_software PRIVATE fsw)
 add_test(NAME flight_software COMMAND test_flight_software)
 
+add_executable(test_detumble test_detumble.cpp)
+target_link_libraries(test_detumble PRIVATE fsw)
+add_test(NAME detumble COMMAND test_detumble)
+
 # Needs `rigidbody` too (not just `fsw`) -- SolarPanel::sample() takes a
 # real RigidBody, since it's a physics primitive living in the engine, not
 # FSW.
@@ -36,3 +40,11 @@ target_include_directories(test_ground_stations PRIVATE ../src/core)
 # doesn't otherwise touch FSW at all.
 target_link_libraries(test_ground_stations PRIVATE rigidbody fsw)
 add_test(NAME ground_stations COMMAND test_ground_stations)
+
+# Same reasoning as test_ground_stations above -- SolarFarms.cpp lives in
+# src/core/, compiled directly into this test rather than linked from a
+# library target.
+add_executable(test_solar_farms test_solar_farms.cpp ../src/core/SolarFarms.cpp)
+target_include_directories(test_solar_farms PRIVATE ../src/core)
+target_link_libraries(test_solar_farms PRIVATE rigidbody fsw)
+add_test(NAME solar_farms COMMAND test_solar_farms)

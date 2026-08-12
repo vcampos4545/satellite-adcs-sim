@@ -150,9 +150,35 @@ void ADCS::resetController()
 void ADCS::retuneForMode()
 {
   ModeTuning t = tuningForMode(effectiveMode);
-  pid.autoTune(hw_.busInertiaTensor, t.settlingTime, t.dampingRatio);
-  lqr.autoTune(hw_.busInertiaTensor, t.settlingTime, t.dampingRatio, t.omega_max);
-  cascaded.autoTune(hw_.busInertiaTensor, t.settlingTime, t.dampingRatio, t.omega_max);
+  // Representative single-actuator torque budget -- same convention
+  // configure() already uses for bdotGain/desatGain (hw_.torquers[0]/
+  // hw_.wheels[0] as "the" actuator spec, not a full allocation-aware
+  // multi-wheel budget). Caps how aggressive autoTune's derived gains can
+  // be, so the settling time each controller actually achieves never
+  // demands more torque than a wheel can deliver -- see Controllers.cpp.
+  //
+  // Only a fraction of the raw max torque is budgeted to that clamp
+  // (autoTune's own worst-case estimate is Kp-only, at zero rate) --
+  // the Kd*rate term isn't captured by that static estimate, and once
+  // the body is actually moving (especially under PID, which -- unlike
+  // Cascaded/LQR -- has no intermediate rate-command saturation stage to
+  // bound it) that term can itself approach the same order as Kp*theta_max.
+  // A headless SUN_POINTING sweep from a 90deg initial error (this
+  // spacecraft's actual composite inertia/realistic wheel torque) showed
+  // the full (1.0x) budget sustains an undamped limit cycle rather than
+  // converging, and 0.35x converges but with a visibly under-damped,
+  // slowly-regrowing oscillation after the initial approach; 0.15x
+  // converges smoothly and holds a stable small error for the ~3000-4500s
+  // window verified (cross-checked across several random IMU-noise
+  // seeds) -- an unrelated, pre-existing EKF covariance-conditioning
+  // issue (float32 precision, no symmetrization safeguard; see the
+  // tracked follow-up) currently limits how much longer a single run can
+  // go before an unrelated NaN, independent of this margin's value.
+  constexpr float kControlTorqueMargin = 0.15f;
+  float maxControlTorqueNm = hw_.wheels[0].maxTorqueNm * kControlTorqueMargin;
+  pid.autoTune(hw_.busInertiaTensor, t.settlingTime, t.dampingRatio, maxControlTorqueNm);
+  lqr.autoTune(hw_.busInertiaTensor, t.settlingTime, t.dampingRatio, t.omega_max, maxControlTorqueNm);
+  cascaded.autoTune(hw_.busInertiaTensor, t.settlingTime, t.dampingRatio, t.omega_max, maxControlTorqueNm);
   resetController(); // discard integral windup/state accumulated under the old tuning
 }
 
@@ -209,6 +235,39 @@ void ADCS::updateEstimator(const FSWInputs &in, float dt)
 
   float attTraceRad2 = covAA[0][0] + covAA[1][1] + covAA[2][2];
   attitudeUncertaintyDeg = glm::degrees(std::sqrt(std::max(attTraceRad2, 0.0f) / 3.0f));
+
+  // Runs here (not in control()) so a mode change this makes is visible to
+  // FDIR::evaluate() the same cycle -- FlightSoftware::step() calls that
+  // between updateEstimator() and control(), reading `mode` as its own
+  // commandedMode input.
+  checkAutoDetumbleEntry(in.imu.gyro - gyroBiasEstimate);
+}
+
+void ADCS::checkAutoDetumbleEntry(const glm::vec3 &rateBody)
+{
+  if (!detumbleAutoTriggerEnabled)
+    return;
+
+  float rateMag = glm::length(rateBody);
+
+  if (mode != PointingMode::DETUMBLE && rateMag > detumbleEntryRateRadS)
+  {
+    mode = PointingMode::DETUMBLE;
+    detumbleAutoEntered_ = true;
+    return;
+  }
+
+  if (mode != PointingMode::DETUMBLE)
+  {
+    detumbleAutoEntered_ = false; // not (or no longer) an auto-managed detumble
+    return;
+  }
+
+  if (detumbleAutoEntered_ && rateMag < detumbleExitRateRadS)
+  {
+    mode = PointingMode::SUN_POINTING;
+    detumbleAutoEntered_ = false;
+  }
 }
 
 FSWOutputs ADCS::control(const FSWInputs &in, float dt)
@@ -242,6 +301,31 @@ FSWOutputs ADCS::control(const FSWInputs &in, float dt)
     wheelCommands = manualWheelTorqueNm;
     magnetorquerCommands = manualMagnetorquerMomentAm2;
     return buildOutputs();
+  }
+
+  if (effectiveMode == PointingMode::DETUMBLE)
+  {
+    if (detumbleActuator == DetumbleActuator::AUTO)
+    {
+      // Use wheels while they have saturation budget (fast/precise, and
+      // typically empty right after deployment); hand off to
+      // magnetorquers once that budget's used up -- same saturation-ratio
+      // computation updateDesaturation() uses for its own thresholds.
+      float maxWheelSat = 0.0f;
+      for (int i = 0; i < NUM_WHEELS; i++)
+      {
+        const WheelConfig &wc = hw_.wheels[i];
+        if (wc.maxSpeedRadS > 1e-9f)
+          maxWheelSat = std::max(maxWheelSat, std::abs(in.wheelTelemetry[i].speedRadS / wc.maxSpeedRadS));
+      }
+      activeDetumbleActuator = (maxWheelSat < detumbleWheelSaturationBudget)
+                                    ? DetumbleActuator::REACTION_WHEELS
+                                    : DetumbleActuator::MAGNETORQUERS_BDOT;
+    }
+    else
+    {
+      activeDetumbleActuator = detumbleActuator;
+    }
   }
 
   computeGuidance(in.spacecraftPositionWorld, dt);
@@ -344,7 +428,7 @@ void ADCS::computeControl(glm::quat attitude, glm::vec3 rate, float dt)
 {
   if (effectiveMode == PointingMode::DETUMBLE)
   {
-    if (detumbleActuator == DetumbleActuator::MAGNETORQUERS_BDOT)
+    if (activeDetumbleActuator == DetumbleActuator::MAGNETORQUERS_BDOT)
     {
       // Wheels get nothing this cycle -- allocateActuators() still runs
       // for them (torqueCommand stays whatever it last was otherwise), so

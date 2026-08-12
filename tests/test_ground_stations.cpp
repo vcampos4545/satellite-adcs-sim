@@ -1,7 +1,7 @@
 // Regression tests for GroundStations.h/.cpp -- the ground-station
 // database plus the "closest station meeting min elevation" selection
 // logic that now drives adcs.target automatically (see
-// satellite_adcs_sim.cpp's ground-station reselection comment).
+// main.cpp's ground-station reselection comment).
 #include "test_common.h"
 #include "GroundStations.h"
 #include <rigidbody/orbit/OrbitFrames.h>
@@ -83,7 +83,7 @@ int main()
   // elevation) across the whole network.
   {
     OrbitState state = OrbitalElements::circular(500e3, 51.6 * OrbitFrames::DEG2RAD, OrbitFrames::EARTH_RADIUS_M)
-                            .toState(TwoBodyGravity{}.mu);
+                           .toState(TwoBodyGravity{}.mu);
     double epochJd = OrbitTime::julianDate(2026, 3, 20, 12, 0, 0.0);
     double minElevationRad = 10.0 * OrbitFrames::DEG2RAD;
 

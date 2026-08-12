@@ -16,9 +16,14 @@ public:
 public:
   PIDController() = default;
 
+  // maxControlTorqueNm caps the omega_n autoTune would otherwise derive
+  // purely from settlingTime, so the peak commanded torque at a
+  // worst-case (antipodal) attitude error never exceeds what the
+  // actuators can actually deliver -- see the .cpp for the derivation.
   void autoTune(glm::mat3 inertiaTensor,
                 float settlingTime,
-                float dampingRatio);
+                float dampingRatio,
+                float maxControlTorqueNm);
 
   glm::vec3 computeControlTorque(
       glm::quat targetAttitude,
@@ -59,11 +64,14 @@ public:
   // Solve the per-axis CARE for gains that hit the given settling time / damping
   // ratio (same parameterization as PIDController::autoTune), so LQR's control
   // authority is tied to the physical response you actually want rather than an
-  // arbitrary, unscaled Q/R pair that can vastly exceed actuator torque limits.
+  // arbitrary, unscaled Q/R pair. maxControlTorqueNm additionally caps the
+  // per-axis omega_n so peak commanded torque at a worst-case attitude error
+  // never exceeds actuator authority -- see the .cpp for the derivation.
   void autoTune(glm::mat3 inertiaTensor,
                 float settlingTime = 5.0f,
                 float dampingRatio = 1.0f,
-                float omega_max = 0.5f);
+                float omega_max = 0.5f,
+                float maxControlTorqueNm = 1e9f);
 
   glm::vec3 computeControlTorque(
       glm::quat targetAttitude,
@@ -88,10 +96,14 @@ public:
 public:
   CascadedController() = default;
 
+  // maxControlTorqueNm caps the omega_n autoTune would otherwise derive
+  // purely from settlingTime -- same torque-vs-worst-case-error
+  // derivation as PIDController::autoTune, see the .cpp.
   void autoTune(glm::mat3 inertiaTensor,
                 float settlingTime = 5.0f,
                 float dampingRatio = 1.0f,
-                float omega_max = 0.5f);
+                float omega_max = 0.5f,
+                float maxControlTorqueNm = 1e9f);
 
   glm::vec3 computeControlTorque(
       glm::quat targetAttitude,

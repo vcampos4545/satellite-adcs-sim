@@ -124,31 +124,32 @@ void drawMagnetorquers(GUI &gui, const std::vector<Magnetorquer *> &magnetorquer
   }
 }
 
-void drawMirror(GUI &gui, RigidBody *sat)
+void drawBus(GUI &gui, RigidBody *sat)
 {
-  // mountOffsetBody is computed from the satellite's true (0.1m-scale)
+  // mountOffsetBody is computed from the satellite's true (18m-scale)
   // size, then scaled -- this is a pure body-frame local offset, not yet
   // rotated into world space, so scaling it here (before applying
   // orientation) is equivalent to and simpler than the
   // offset-from-center trick drawReactionWheels/drawMagnetorquers use.
-  glm::vec3 mountOffsetBody = Config::MIRROR_NORMAL_BODY * (sat->size.z * 0.5f + Config::MIRROR_SIZE.z * 0.5f) * Config::SATELLITE_VISUAL_SCALE;
+  // Along -Z (behind the mirror plate) so the bus reads as a distinct
+  // structure sitting at the mirror's center, not merged into it.
+  glm::vec3 mountOffsetBody = -Config::MIRROR_NORMAL_BODY * (sat->size.z * 0.5f + Config::BUS_SIZE.z * 0.5f) * Config::SATELLITE_VISUAL_SCALE;
   glm::vec3 worldPos = sat->position + sat->orientation * mountOffsetBody;
-  gui.drawBox(worldPos, Config::MIRROR_SIZE * Config::SATELLITE_VISUAL_SCALE, sat->orientation, {0.85f, 0.92f, 0.98f});
+  gui.drawBox(worldPos, Config::BUS_SIZE * Config::SATELLITE_VISUAL_SCALE, sat->orientation, {0.6f, 0.62f, 0.68f});
 }
 
 void drawSunReflection(GUI &gui, RigidBody *sat, const glm::vec3 &sunPosition)
 {
-  // Same scaled mountOffsetBody as drawMirror -- must match exactly so
-  // the reflection geometry originates from the same point the mirror is
-  // actually drawn at.
-  glm::vec3 mountOffsetBody = Config::MIRROR_NORMAL_BODY * (sat->size.z * 0.5f + Config::MIRROR_SIZE.z * 0.5f) * Config::SATELLITE_VISUAL_SCALE;
-  glm::vec3 mirrorPos = sat->position + sat->orientation * mountOffsetBody;
+  // `sat` itself is the mirror plate now -- its own position/orientation
+  // is the reflecting surface, no mount-offset math needed (that offset
+  // only existed while the decorative mirror was physically separate
+  // from the tiny cube body).
+  glm::vec3 mirrorPos = sat->position;
   glm::vec3 normalWorld = glm::normalize(sat->orientation * Config::MIRROR_NORMAL_BODY);
 
   // sunPosition is the real Sun position (~1.5e11 m away, see main()) --
-  // mirrorPos sitting a few km from the satellite's real orbital position
-  // is negligible against that distance, so this direction is unaffected
-  // by the mirror-offset visual scaling above.
+  // mirrorPos sitting at the satellite's real orbital position is
+  // negligible against that distance either way.
   glm::vec3 incidentDir = glm::normalize(mirrorPos - sunPosition); // sun -> mirror
   gui.drawLine(sunPosition, mirrorPos, {1.0f, 0.5f, 0.9f});
 

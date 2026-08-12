@@ -148,6 +148,18 @@ void drawGroundStations(GUI &gui, double thetaGstRad)
   }
 }
 
+void drawSolarFarms(GUI &gui, double thetaGstRad)
+{
+  constexpr float markerRadiusM = 3.5e4f; // same size as ground-station markers
+  const glm::vec3 farmColor{0.95f, 0.75f, 0.15f}; // gold, distinct from ground stations' gray
+
+  for (const SolarFarm &farm : SOLAR_FARMS)
+  {
+    glm::vec3 posEci = glm::vec3(solarFarmPositionEci(farm, thetaGstRad));
+    gui.drawSphere(posEci, markerRadiusM, farmColor);
+  }
+}
+
 void drawGroundTrackMinimap(const Texture &earthTexture,
                             const std::vector<glm::vec2> &groundTrack,
                             const glm::dvec3 &satPosEci, double thetaGstRad,

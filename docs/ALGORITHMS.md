@@ -2,7 +2,7 @@
 
 This is the standing reference for the equations, algorithms, and modeling
 assumptions behind this project's flight software and physical models. Code
-comments explain *why* a specific line does what it does; this document is
+comments explain _why_ a specific line does what it does; this document is
 where the underlying math and its assumptions live in one browsable place,
 independent of where in the code they're implemented.
 
@@ -39,7 +39,7 @@ FSW itself never knows any of this is ECI specifically — `ADCS`/`FDIR`
 only ever see the plain `FSWInputs`/`ADCS` fields (`spacecraftPositionWorld`,
 `sunPosition`, ...) through the ordinary hardware-abstraction boundary
 (see below), the same as they would against a HIL rig or real flight
-hardware. "World frame is ECI" is a fact about what the *harness* feeds
+hardware. "World frame is ECI" is a fact about what the _harness_ feeds
 them, not something FSW code depends on or could tell from the inside.
 
 ## Hardware-Abstraction Boundary
@@ -64,16 +64,83 @@ against nothing but `glm` (see `tests/CMakeLists.txt`).
 
 ---
 
+## Spacecraft Structure: Composite Mirror + Bus Mass/Inertia
+
+A Reflect-Orbital-style mission concept: an 18m x 18m deployable mirror
+(the `RigidBody` itself, `src/core/Cubesat.cpp`'s `buildCubesatPyramid()`)
+with a much smaller bus at its center. The mirror plate and bus core are
+coaxially centered on the same point (a deployable-membrane layout like
+IKAROS's real solar sail — boom-mounted membrane, bus at the hub), so the
+composite inertia is a direct sum of each element's own inertia about the
+shared center — no parallel-axis term is needed.
+
+**Mirror**: 18m x 18m x 5mm box, areal density 0.1 kg/m² (~2x IKAROS's
+real ~48 g/m² sail-only figure, accounting for a mirror needing better
+optical/structural quality than a pure photon-pressure sail) → ~32.4 kg
+raw, rounded up to 35 kg for supporting boom/structure margin —
+representative, not a real hardware spec (none exists at this scale).
+Thin-plate box inertia about its own center (thickness term negligible
+against the 18m span):
+
+```
+Ix = Iy = m(L² + t²)/12 ≈ mL²/12
+Iz = m(Lx² + Ly²)/12 = mL²/6   (square plate, Lx = Ly = L)
+```
+
+**Bus**: 0.5m cube core, 40 kg representative small-bus mass (avionics,
+mirror-deployment mechanism). The mission concept's "~2.5m envelope with
+panels deployed" is the deployed solar-panel span, not the structural
+core — those panels are thin/low-mass, and their inertia contribution is
+folded into the bus's own margin rather than modeled as a separate
+element. Standard cube inertia, `I = ms²/6` (all axes).
+
+**Composite** (sum, both about the shared center): total mass 75 kg,
+`Ixx = Iyy ≈ 946.7 kg·m²`, `Izz ≈ 1891.7 kg·m²` — confirmed by direct
+computation in a headless check against `buildCubesatPyramid()`'s actual
+output. Applied via `RigidBody::setMass()`/`setInertiaTensor()`
+(`spacecraft-dynamics-sim`'s engine API for overriding the shape-derived
+mass/inertia with a more accurate composite value), not just a resized
+bounding box.
+
+This is a ~450,000-850,000x jump from the project's original 1U-cubesat
+inertia (~0.002 kg·m²), which in turn required resizing the wheel/
+magnetorquer actuators so the spacecraft retains meaningful angular
+control authority. Real reaction wheels are sized to the _bus's_
+mass/power/volume budget (a smallsat buys an off-the-shelf wheel that
+fits its bus, it doesn't size a custom wheel to the payload's inertia),
+so realistic sizing here means real hardware in the 50-150 kg smallsat
+class, not the payload's own huge inertia:
+
+- **Wheel `maxTorqueNm`**: 0.025 Nm, **`wheelInertia`**: 1.6e-3 kg·m²
+  (~1.0 Nms momentum capacity at `maxSpeedRadS`) — matching real
+  smallsat-class reaction wheels (e.g. Blue Canyon RWp500 / Sinclair
+  RW-1.0 class).
+- **Magnetorquer `maxMomentAm2`**: 15.0 A·m² — matching a real
+  torque-rod product in this bus class (e.g. ZARM Technik MT15-1).
+
+This is _smaller_ than an earlier placeholder value used during initial
+verification (1.0 Nm / 20 A·m², explicitly flagged then as "not a real
+spec"), and much smaller than what would be needed to hit the project's
+original 1U-cubesat-scale settling-time targets at this inertia — see
+"Torque-aware auto-tune" under Attitude Control below for how that's
+reconciled.
+
+See "Torque-aware auto-tune" (under Attitude Control) for how
+`ADCS::retuneForMode()` keeps the settling time each controller actually
+chases consistent with what these actuators can deliver.
+
+---
+
 ## Orbital Mechanics
 
 The satellite's real orbital position/velocity is truth-propagated by
 `spacecraft-dynamics-sim`'s `rigidbody/orbit/` module (double precision,
 `glm::dvec3`/`glm::dquat`) as part of `PhysicsWorld::step()` itself, via
 the engine's **orbital mode**: `PhysicsWorld::attachCelestialSystem()` +
-`setOrbitalMode()` puts a body's *translational* state under a
+`setOrbitalMode()` puts a body's _translational_ state under a
 `CelestialSystem`-driven RK4 propagation (two-body toward its primary,
 `CelestialPerturbation` for each other body in the system), while its
-*rotational* dynamics (orientation, angular velocity, actuator
+_rotational_ dynamics (orientation, angular velocity, actuator
 `ForceGenerator`s) keep integrating exactly like any other `RigidBody`.
 `SimulationState::buildSimulationState()` (`src/core/SimulationState.h`/
 `.cpp`) builds a Sun → Earth → Moon `CelestialSystem` (Earth/Moon reuse the
@@ -90,7 +157,7 @@ together**, in that order, once per `Config::TIME_STEP_S`
 (`main()`): `sim.step(dt)` — `world.step(dt)` (propagates the Sun/Earth/
 Moon hierarchy and the spacecraft's orbital-mode state, then integrates
 rotational dynamics against whatever actuator commands
-`Cubesat::applyActuatorCommands()` issued at the *end* of the previous
+`Cubesat::applyActuatorCommands()` issued at the _end_ of the previous
 cycle — zero-order hold, the standard discretization for a sampled control
 loop), followed by refreshing `SimulationState`'s own cached eclipse/
 field/sun-direction quantities from `world.isInEclipse()`/
@@ -101,18 +168,18 @@ telemetry. Keeping orbit propagation and rotational dynamics inside the
 same `world.step()` call (rather than two separately-scheduled systems the
 harness has to keep in sync by hand) is what guarantees every actuator
 command a control cycle issues actually gets integrated before the next
-one runs, and is what lets `SimulationState`/`Fsw` *read* eclipse/field/
+one runs, and is what lets `SimulationState`/`Fsw` _read_ eclipse/field/
 sun-direction as `PhysicsWorld` query results instead of re-deriving them.
 
 **Double-precision truth, bridged into `RigidBody` every FSW cycle**: a
 LEO orbital radius (~6.9e6 m) leaves float32 with only meter-level
 precision, and that error would compound every integration step over a
-mission that can run for months — so the *integration* itself happens in
+mission that can run for months — so the _integration_ itself happens in
 the double-precision `orbit/` module, not through `PhysicsWorld`'s own
 (float32) translational stepping. Each cycle, the harness copies the
 result into `sat.body->position` as a single non-accumulating cast (see
 `rigidbody/orbit/OrbitState.h`'s header comment) — this is safe precisely
-*because* it's a fresh copy from the double-precision truth every frame,
+_because_ it's a fresh copy from the double-precision truth every frame,
 not something `PhysicsWorld` integrates on its own: `sat.body->velocity`
 is deliberately never set to match real orbital velocity, so
 `PhysicsWorld`'s own translational integration contributes nothing on
@@ -151,17 +218,23 @@ ECI state, summing a set of pluggable force models each stage
   and `Cr` is the reflectivity coefficient (1.0 = perfect absorber,
   ~2.0 = perfect reflector; defaults to 1.3, typical for a mixed real
   surface). Zeroed during eclipse via the same `EclipseModel` used for EPS
-  generation gating.
+  generation gating. `A/m` (`Config::SPACECRAFT_CROSS_SECTION_M2` /
+  `SPACECRAFT_MASS_KG`) uses the mirror's full 18m x 18m face area against
+  its 75kg composite mass (see "Spacecraft Structure" above) — at this
+  ratio SRP is no longer a minor perturbation (~2.9 mN at 1 AU for a
+  reflective 324 m² surface), so visibly larger SRP-driven orbital
+  perturbation than the project's original 1U-cubesat scale is expected,
+  not a bug.
 - **Third-body gravity, Sun and Moon** (`rigidbody/orbit/ThirdBodyGravity.h`):
   `a = mu_body * (d/|d|^3 - r_body/|r_body|^3)`, where `d = r_body -
-  r_satellite`. The second (`-r_body/|r_body|^3`) term is the "indirect"
+r_satellite`. The second (`-r_body/|r_body|^3`) term is the "indirect"
   correction that removes Earth's own acceleration toward the third body,
   which is what keeps the result correct in the (non-inertial-relative-to-
   the-third-body, but inertial-relative-to-Earth) ECI frame this project
   uses — without it the formula would double-count Earth's own fall
   toward the Sun/Moon as a perturbation on the satellite. Moon position
-  comes from `rigidbody/orbit/MoonModel.h` (Meeus, *Astronomical
-  Algorithms* ch. 47, reduced to its dominant periodic terms — ~0.3°
+  comes from `rigidbody/orbit/MoonModel.h` (Meeus, _Astronomical
+  Algorithms_ ch. 47, reduced to its dominant periodic terms — ~0.3°
   accurate, the same precision tier as `SunModel`).
 
 All four of these perturbations are added to both the real
@@ -189,13 +262,13 @@ slowly further out) — nowhere near ephemeris-grade, which this project has
 no need for.
 
 **Eclipse** (`rigidbody/orbit/EclipseModel.h`): cylindrical shadow model —
-in shadow if the satellite is on the night side of Earth's center *and*
+in shadow if the satellite is on the night side of Earth's center _and_
 within Earth's radius of the Earth-Sun line. Slightly overestimates
 eclipse duration versus the true conical umbra/penumbra; adequate for
 gating EPS generation (see "EPS" below), not for anything needing a
 precise penumbra transition.
 
-**Sun/Moon rendering** (harness, `satellite_adcs_sim.cpp`'s draw block):
+**Sun/Moon rendering** (harness, `main.cpp`'s draw block):
 both are drawn at their real ECI positions and real physical radii, not
 scaled-for-visibility stand-ins — the Sun via `adcs.sunPosition` (already
 the real `SunModel::positionEci`) and `OrbitFrames::SUN_RADIUS_M`, the
@@ -238,7 +311,7 @@ it to `normalize(adcs.sunPosition)` every frame, right before
 `gui.beginFrame()` (the real direction from Earth's center toward the
 Sun) so Earth's lit hemisphere actually corresponds to where the Sun
 marker is drawn. The shader's diffuse term is
-`dot(normal, normalize(lightDir))`, i.e. `lightDir` must point *toward*
+`dot(normal, normalize(lightDir))`, i.e. `lightDir` must point _toward_
 the light source, not describe the Sun's position itself — using the raw
 `adcs.sunPosition` vector unnormalized (or negated) here would light the
 wrong hemisphere.
@@ -259,7 +332,7 @@ field-line loops connecting Earth's magnetic poles, in the same style as
 a textbook/magnetosphere field-line diagram. Seeded on a colatitude/
 azimuth grid near both poles (measured from `CentralBodyMagneticField`'s
 `rotationAxisWorld`, an approximation of the true ~11°-tilted dipole axis
-that's exact enough for seed *placement* — the traced geometry itself is
+that's exact enough for seed _placement_ — the traced geometry itself is
 exact, since every step samples the real field), each line is integrated
 as an RK4 arclength streamline (`dP/ds = sign * B(P)/|B(P)|`, not a
 time-stepped trajectory) until it either closes back onto the surface or
@@ -276,7 +349,7 @@ connects to reads at a glance.
 (`drawReactionWheels`/`drawMagnetorquers`, harness): these read the
 public `mountPositionBody`/`spinAxisBody`/`axisBody` fields directly and
 apply `SATELLITE_VISUAL_SCALE` to the (small, ~0.03 m) mount offset
-*before* rotating and adding it to the satellite's real (~6.9e6 m)
+_before_ rotating and adding it to the satellite's real (~6.9e6 m)
 position — not
 `wheel->getWorldMountPosition(*sat)` (which computes `body.position +
 body.orientation * mountOffset` internally, in float32, before the
@@ -284,7 +357,7 @@ harness ever sees the result). Scaling after that internal addition
 can't recover precision already lost to the same catastrophic-
 cancellation pattern described above for `adcs.sunPosition`/ground-station
 targeting (below) — the general fix is always to scale the small offset
-up to a normal-sized number *first*, then add it to the large base value,
+up to a normal-sized number _first_, then add it to the large base value,
 never the reverse.
 
 **Orbital elements / geodetic conversion, for the Orbit tab**
@@ -293,11 +366,11 @@ never the reverse.
 (angular momentum/node/eccentricity vectors, vis-viva for semi-major
 axis) recovers classical elements (altitude, eccentricity, inclination,
 RAAN, argument of periapsis, true anomaly, period, apogee/perigee) from
-`orbitState`'s *real, propagated* position/velocity — displayed elements
+`orbitState`'s _real, propagated_ position/velocity — displayed elements
 drift from the initial commanded values as J2 acts on the orbit (nodal
 regression, apsidal drift — see "Propagation" above), same as a real
 spacecraft's actual orbit does. The ground-track minimap and the 3D
-ground-footprint circle (satellite_adcs_sim.cpp's `drawGroundTrackMinimap`/
+ground-footprint circle (main.cpp's `drawGroundTrackMinimap`/
 `drawGroundFootprint`, structurally ported from `constellation-sim`'s
 `SatelliteRenderer`) both derive from this same real state — the
 footprint's coverage half-angle uses the standard elevation-angle
@@ -323,23 +396,23 @@ vectors, the same as it would from a HIL rig or real hardware):
 - `adcs.sunPosition` — the real Sun position (`SunModel::positionEci`),
   not an arbitrary nearby offset. This matters numerically, not just for
   correctness: with `spacecraftPositionWorld` now at real (~6.9e6 m)
-  scale, encoding the sun *direction* as a small offset from it (the
+  scale, encoding the sun _direction_ as a small offset from it (the
   previous "2 units away" convention) would suffer catastrophic
   cancellation once `sunPosition - spacecraftPositionWorld` is computed
   back out in float32 — the small offset gets rounded away against the
   much larger base position. The real Sun position (~1.5e11 m) doesn't
-  have this problem: it's the *dominant* term in that subtraction, not a
+  have this problem: it's the _dominant_ term in that subtraction, not a
   small perturbation of one.
 - EPS generation gating — see "EPS" below.
 
 **Ground-station targeting** (`GroundStations.h/.cpp`, harness): `TARGET`/
 `SLEW`/`FINE_POINTING`/`REFLECT` all aim at `adcs.target`, which the
 harness sets every simulated frame to the real ECI position of the
-closest ground station currently *within the satellite's footprint*
+closest ground station currently _within the satellite's footprint_
 (elevation ≥ `Config::GROUND_STATION_MIN_ELEVATION_DEG`, 10° — a typical
 real minimum usable elevation, distinct from
 `Config::FOOTPRINT_MIN_ELEVATION_DEG`'s 0°/horizon-limited pure
-*geometric coverage* circle, see its own comment in `Config.h`) — not an
+_geometric coverage_ circle, see its own comment in `Config.h`) — not an
 arbitrary point, and not a fixed one. `GROUND_STATIONS` is a small
 compiled list of major US cities' geodetic lat/lon, standing in for real
 ground-segment sites (see README.md's Scope section on this project's
@@ -379,11 +452,11 @@ arbitrary-surface-point target was placed there: comparable in magnitude
 to `spacecraftPositionWorld` (a well-conditioned
 `target - spacecraftPositionWorld` subtraction) rather than negligible
 next to it (catastrophic cancellation) — the sun-relative fallback
-doesn't have this problem either, `sunPosition` being the *dominant* term
+doesn't have this problem either, `sunPosition` being the _dominant_ term
 in that same subtraction at ~1.5e11 m.
 
 The harness only resets the attitude controller's integral windup
-(`adcs.resetController()`) when *what's selected* actually changes — a
+(`adcs.resetController()`) when _what's selected_ actually changes — a
 different ground station, or `targetValid` flipping — not every frame:
 `adcs.target`'s position updates continuously as the selected station's
 ECI position sweeps with Earth's rotation, which the controller should
@@ -394,7 +467,7 @@ track smoothly, not react to as a discrete retarget each cycle.
 Stations tab's contact schedule — a first step toward comms-link
 simulation, per this project's own trajectory (see README.md's Scope
 section). For each of the next `Config::PASS_PREDICTION_LOOKAHEAD_S`
-(24h) of simulated time, a *copy* of the real orbital state is propagated
+(24h) of simulated time, a _copy_ of the real orbital state is propagated
 forward in fixed `Config::PASS_PREDICTION_STEP_S` (15s) increments — the
 same force models as the real propagator and `computePredictedOrbitPath`
 (two-body, J2, drag, SRP, Sun/Moon third-body), for consistency — sampling
@@ -411,7 +484,7 @@ search actually resolved.
 
 Refreshed on a **real wall-clock** timer (`Config::PASS_PREDICTION_REFRESH_S`,
 30s), not simulated time like `computePredictedOrbitPath`'s own refresh —
-tying a ~5760-step search's cadence to `simDt` would make it run *more*
+tying a ~5760-step search's cadence to `simDt` would make it run _more_
 often, not less, the faster `SimControls::timeScale` is turned up, the
 opposite of what keeping the frame rate steady at high time-scale needs.
 
@@ -453,13 +526,23 @@ axis is undefined).
 
 `pointDir` per mode:
 
-| Mode | `pointDir` |
-|---|---|
-| `NADIR` | `-normalize(spacecraftPosition)` — world frame is ECI (see "Coordinate Frames" above), so this is a real Earth-center direction |
-| `SUN_POINTING` | `normalize(sunPosition - spacecraftPosition)` |
-| `TARGET` / `SLEW` / `FINE_POINTING` | `normalize(target - spacecraftPosition)` |
-| `REFLECT` | see below |
-| `DETUMBLE` | none — bypasses guidance entirely, see "Detumble" |
+| Mode                                | `pointDir`                                                                                                                      |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `NADIR`                             | `-normalize(spacecraftPosition)` — world frame is ECI (see "Coordinate Frames" above), so this is a real Earth-center direction |
+| `SUN_POINTING`                      | `normalize(sunPosition - spacecraftPosition)`                                                                                   |
+| `TARGET` / `SLEW` / `FINE_POINTING` | `normalize(target - spacecraftPosition)`                                                                                        |
+| `REFLECT`                           | see below                                                                                                                       |
+| `DETUMBLE`                          | none — bypasses guidance entirely, see "Detumble"                                                                               |
+
+`REFLECT`'s `target` is still whatever `adcs.target` currently holds
+(ground-station auto-tracking, same as `TARGET`/`SLEW`/`FINE_POINTING`).
+`src/core/SolarFarms.h`'s `SOLAR_FARMS` (real-world utility-scale solar
+farm sites, for a Reflect-Orbital-style mission concept) is data +
+globe-marker visualization only — deliberately not wired into `target`
+auto-selection here. Auto-tracking a solar farm the way ground stations
+are tracked (accounting for e.g. the site needing to be in dusk/dawn
+shadow while the spacecraft itself stays sunlit, the actual geometry a
+real orbital-mirror mission needs) is a natural follow-up, not implemented.
 
 ### REFLECT: mirror bisector law
 
@@ -494,7 +577,7 @@ have a persisted regression test; a good first addition per
 State: `[attitude error δθ (3), gyro bias error δb (3)]`, an indirect
 ("error-state") multiplicative EKF — the nominal state is `estimatedAttitude`
 (a full quaternion) and `gyroBiasEstimate`, propagated directly, while the
-6x6 covariance describes uncertainty in a small-angle *error* around them.
+6x6 covariance describes uncertainty in a small-angle _error_ around them.
 This is the standard approach for attitude EKFs since quaternions have no
 flat vector space to naively apply a linear Kalman filter to.
 
@@ -502,6 +585,25 @@ Covariance is stored as four `glm::mat3` blocks (`covAA`, `covAB`, `covBB`)
 instead of one 6x6 matrix, since GLM has no fixed 6x6 type — `covBA` is
 never stored separately (`P` is symmetric by construction, every update
 preserves that).
+
+**Known issue (tracked separately, not fixed here)**: `propagateEstimator()`/
+`correctEstimator()` update `covAA`/`covAB`/`covBB` with a raw assignment
+each cycle — no symmetrization, no positive-semi-definiteness safeguard
+(no Joseph-form update), and all in `float` (32-bit), not `double`.
+Headless testing (a spacecraft held in continuous, well-converged
+SUN_POINTING for several thousand simulated seconds — tens of thousands
+of propagate/correct cycles) reproducibly hit a hard NaN in `covAA`
+(propagating instantly into `estimatedAttitude`, body rate, and every
+wheel state the same cycle), consistent with float32 accumulation error
+eventually breaking `covAA`'s positive-definiteness until `correctEstimator()`'s
+`glm::inverse(S)` (`S = covAA + R*I`, no conditioning check) blows up.
+Reproduced across multiple independent runs, always after a long,
+tightly-converged hold, never during a large initial-error transient —
+this wasn't caught earlier because no prior test in this project ran the
+EKF continuously this long. A real fix (covariance symmetrization each
+update, and/or a small positive floor, and/or switching this state to
+double precision) is a genuine follow-up, not something to patch as a
+side effect of an unrelated change.
 
 ### Propagate (`propagateEstimator`, every `step()` cycle)
 
@@ -587,7 +689,7 @@ omega_current, dt) -> torqueCommand`, auto-tuned from `settlingTime`/
 
 - **PID**: classic quaternion-error PID with integral clamping.
 - **LQR**: per-axis double-integrator model (`theta_dot = omega, omega_dot
-  = u/I_axis`; small-angle error, principal-axis inertia, cross-axis
+= u/I_axis`; small-angle error, principal-axis inertia, cross-axis
   coupling ignored), closed-form continuous-time algebraic Riccati
   solution (no numerical CARE solver needed for a 2-state/1-input system).
 - **Cascaded**: outer loop maps attitude error to a rate command (with
@@ -598,11 +700,59 @@ precision for speed (short settling time, high rate cap), `FINE_POINTING`
 trades speed for precision (long settling time, overdamped, tight rate
 cap); everything else uses one moderate preset.
 
+### Torque-aware auto-tune
+
+Each controller's `autoTune()` independently derives `omega_n = 4 /
+(dampingRatio * settlingTime)` from the requested settling time, then
+sizes gains off it (`Kp = I*omega_n^2`, `Kd = 2*dampingRatio*I*omega_n`,
+or the LQR-equivalent Q/R back-solve). At high inertia, a settling-time
+target alone can demand torque the actuators don't have — pure gain
+scaling from inertia doesn't account for actuator authority at all.
+`autoTune()` now also takes `maxControlTorqueNm` and caps `omega_n`
+against it: for a worst-case (antipodal, `theta_max = pi`) attitude error
+at zero rate, the peak commanded torque is `Kp * theta_max =
+I*omega_n^2*pi`; capping that at the budget gives
+
+```
+omega_n = min(4 / (dampingRatio * settlingTime),
+              sqrt(maxControlTorqueNm / (I * pi)))
+```
+
+If the requested settling time is already achievable within budget this
+is a no-op; otherwise the _achieved_ settling time is longer than
+requested — self-derived from real actuator authority rather than a
+second hardcoded constant to keep in sync by hand. PID/Cascaded use the
+average diagonal `I = (Ixx+Iyy+Izz)/3` (same as their existing gain
+derivation); LQR applies this per-axis (`I = inertiaTensor[i][i]`,
+matching its own existing per-axis Kp/Kd solve) — for this project's
+mirror spacecraft, Izz (1891.7) is 2x Ixx/Iyy (946.7), so the Z axis gets
+its own, looser ceiling.
+
+`ADCS::retuneForMode()` passes `hw_.wheels[0].maxTorqueNm` (representative
+single-actuator value, the same convention `bdotGain`/`desatGain` already
+use for `hw_.torquers[0]`/`hw_.wheels[0]`) scaled by a **0.15x margin**,
+not the raw value. The static Kp-only worst-case estimate above doesn't
+capture the `Kd*rate` term's own torque contribution once the body is
+actually moving — under `PID` in particular, which (unlike Cascaded/LQR)
+has no intermediate rate-command saturation stage to bound that term, so
+it can approach the same order as the Kp term during a real transient.
+Headless testing (SUN_POINTING from 90° initial error, this spacecraft's
+actual composite inertia and realistic wheel torque) confirmed the full
+(1.0x) budget sustains an undamped limit cycle rather than converging,
+and 0.35x converges but with a visibly under-damped, regrowing
+oscillation; 0.15x converges smoothly and holds a stable small error for
+the several-thousand-second window verified, cross-checked across
+several random IMU-noise seeds. (An unrelated, pre-existing EKF
+covariance-conditioning bug — see "Attitude Estimation" — currently
+limits how much longer a single continuous run can go before an
+unrelated NaN; it is independent of this margin's value and is tracked
+separately, not fixed here.)
+
 **Sign convention** (load-bearing, found by empirical testing, not just
 derivation): `ReactionWheel`'s simulated reaction dynamics apply the
-*negative* of whatever torque is commanded (Newton's-third-law reaction —
+_negative_ of whatever torque is commanded (Newton's-third-law reaction —
 spinning the wheel one way reacts the bus the other way). Every control
-law here computes the torque it wants applied *to the bus*, and
+law here computes the torque it wants applied _to the bus_, and
 `allocateActuators()`/the wheel model's own convention handles the sign
 flip — but hand-derived laws that skip the allocator (`computeDetumbleTorque`,
 the cross-product desaturation law below) have to bake the compensating
@@ -628,7 +778,7 @@ wheels are trusted). `dB/dt` is finite-differenced from consecutive valid
 magnetometer samples.
 
 **Gain derivation** (`configure()`): targets near-max dipole moment at a
-*representative ongoing* tumble (0.3 rad/s), not the initial deployment
+_representative ongoing_ tumble (0.3 rad/s), not the initial deployment
 peak (~1 rad/s) — the fast initial phase self-corrects regardless of exact
 saturation; the actuator's utilization matters far more during the slower
 "final approach." Uses `E[sin(theta)] = pi/4` (expected value of the
@@ -642,13 +792,62 @@ representativeDbDt = 0.3 rad/s * 30e-6 T * (pi/4)
 bdotGain = maxMomentAm2 / representativeDbDt
 ```
 
+**Automatic entry/exit** (`checkAutoDetumbleEntry`, called from
+`updateEstimator()`): `ADCS` itself, not `FDIR`, autonomously commands
+`mode = DETUMBLE` when bias-corrected `|rate|` exceeds
+`detumbleEntryRateRadS` (1.3 rad/s) while not already in `DETUMBLE`, and
+reverts to `SUN_POINTING` once an _auto-entered_ `DETUMBLE`'s rate damps
+below the lower, hysteresis `detumbleExitRateRadS` (0.1 rad/s) — a
+manually-commanded `DETUMBLE` is never auto-exited (tracked via an
+internal "was this auto-entered" flag). Runs before `FDIR::evaluate()`
+each cycle (see `FlightSoftware::step()`), so a same-cycle mode change is
+visible to FDIR's own `commandedMode` input, not delayed a cycle.
+
+This is deliberately distinct from FDIR's `EXCESS_RATE` fault (see "FDIR
+/ Mode Manager" below): that fault is a higher-threshold (2.0 rad/s)
+anomaly backstop that _latches_ until a ground command explicitly clears
+it, appropriate for a genuinely off-nominal condition. Routine post-
+deployment tumbling is an expected mission phase, not an anomaly, so this
+mechanism is non-latching and self-clearing at a lower, "can't usefully
+point yet" threshold instead. `detumbleEntryRateRadS`'s value has to
+clear `SLEW`'s own commanded-rate cap (`ModeTuning::omega_max`, 1.0
+rad/s) with real margin — an aggressive slew genuinely pins body rate
+near that cap (see `Controllers.cpp`), not just a theoretical ceiling, so
+a lower entry threshold would false-trigger DETUMBLE mid-maneuver
+(verified directly in `tests/test_detumble.cpp` against that exact
+boundary).
+
+**Automatic actuator selection** (`DetumbleActuator::AUTO`, the default):
+each cycle, `ADCS::control()` computes peak wheel saturation
+(`max(|speed_i / maxSpeed_i|)`, the same ratio `updateDesaturation()`
+already computes for its own thresholds) and picks reaction wheels while
+that stays under `detumbleWheelSaturationBudget` (0.3) — fast/precise,
+and wheels typically start empty right after deployment — handing off to
+magnetorquers once that budget's used up, for the rest of the detumble.
+The resolved choice is published as `activeDetumbleActuator` (mirrors
+`detumbleActuator` directly when it isn't `AUTO`), the same "commanded X,
+actually flying Y" telemetry pattern `effectiveMode` already uses.
+`REACTION_WHEELS`/`MAGNETORQUERS_BDOT` remain selectable as explicit
+manual overrides.
+
+**Deployment** (`SimulationState::buildSimulationState()`, harness):
+the spacecraft starts with a real nonzero angular velocity — a per-axis
+uniform kick over `[-Config::DEPLOYMENT_TUMBLE_RATE_RAD_S,
++Config::DEPLOYMENT_TUMBLE_RATE_RAD_S]` (1.6 rad/s), the same shape as
+the manual "Kick into random tumble" button, applied once at startup
+instead of on a button press. `1.6` is chosen so the expected 3-axis
+vector magnitude (`E[|v|] ≈ R` for per-axis `Uniform(-R,R)`) sits above
+`detumbleEntryRateRadS` with real margin, while staying a typical case
+well under FDIR's `excessRateRadS` (a worst-case draw near `R*sqrt(3) ≈
+2.77` is a rare tail, not the common case).
+
 ---
 
 ## Momentum Desaturation (`updateDesaturation`)
 
 Reaction wheels are purely internal actuators — they redistribute momentum
 between body and wheel, never remove it from the system. Only an
-*external* torque (the magnetorquers) can actually unload momentum. Runs
+_external_ torque (the magnetorquers) can actually unload momentum. Runs
 concurrently with whatever pointing mode is active (not a `PointingMode`
 itself), using the classic cross-product law (Stickler & Alfriend):
 
@@ -668,7 +867,7 @@ saturation and drove pointing error to 170° in a headless test; this sign
 drains the wheels while holding pointing steady.
 
 **Headroom scaling**: `headroom = clamp(1 - maxWheelSat, 0.05, 1.0)`. The
-external torque this law creates has to be *absorbed* by the same wheels
+external torque this law creates has to be _absorbed_ by the same wheels
 being desaturated — pushing full-strength at 90% saturation left no spare
 torque to react with, destabilizing pointing (170° error, confirmed
 empirically); scaling by remaining headroom lets desat push hard when
@@ -705,17 +904,17 @@ predict+correct, so `evaluate()` has a fresh `attitudeUncertaintyDeg` and
 bias-corrected rate to read) and before `ADCS::control()` (so its output,
 written into `ADCS::effectiveMode`, is what guidance/control actually
 compute against that cycle). See `src/fsw/FDIR.h` for `FDIR`'s own public
-API, which this restructure left unchanged — only *who calls* `evaluate()`
+API, which this restructure left unchanged — only _who calls_ `evaluate()`
 moved.
 
 **Detected conditions** (bitmask, more than one can be active):
 
-| Fault | Condition |
-|---|---|
-| `WHEEL_AUTHORITY_LOST` | fewer than `minHealthyWheels` (default 3) wheels healthy — the 4-wheel pyramid needs >=3 non-degenerate spin axes to span all 3 body axes; 2 arbitrary vectors can only span a plane |
-| `ATTITUDE_UNCERTAIN` | `attitudeUncertaintyDeg > attitudeUncertaintyTriggerDeg` (default 5°), **sustained** for `attitudeUncertaintySustainedS` (default 5s) — not instantaneous, so one noisy cycle/dropped frame can't trip it |
-| `EXCESS_RATE` | `|rateBody| > excessRateRadS` (default 2 rad/s) — outside the attitude controllers' tuned envelope |
-| `LOW_BATTERY` | `batterySoc < lowBatterySocTrigger` (default 0.2) — instantaneous; SOC doesn't jitter like a sensor reading, no sustain timer needed |
+| Fault                  | Condition                                                                                                                                                                                                 |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WHEEL_AUTHORITY_LOST` | fewer than `minHealthyWheels` (default 3) wheels healthy — the 4-wheel pyramid needs >=3 non-degenerate spin axes to span all 3 body axes; 2 arbitrary vectors can only span a plane                      |
+| `ATTITUDE_UNCERTAIN`   | `attitudeUncertaintyDeg > attitudeUncertaintyTriggerDeg` (default 5°), **sustained** for `attitudeUncertaintySustainedS` (default 5s) — not instantaneous, so one noisy cycle/dropped frame can't trip it |
+| `EXCESS_RATE`          | `                                                                                                                                                                                                         | rateBody | > excessRateRadS`(default 2 rad/s) — outside the attitude controllers' tuned envelope. Higher-threshold, latched anomaly backstop — distinct from`ADCS`'s own lower-threshold, non-latching automatic detumble entry (see "Detumble" above), which handles routine post-deployment tumbling before it would ever reach this |
+| `LOW_BATTERY`          | `batterySoc < lowBatterySocTrigger` (default 0.2) — instantaneous; SOC doesn't jitter like a sensor reading, no sustain timer needed                                                                      |
 
 **Latching**: once tripped, a fault stays active even if its condition
 clears on its own, until `clearLatchedFaults()` (a ground command)
@@ -732,11 +931,11 @@ commanded `mode`:
 - Otherwise → `SUN_POINTING` — the closest thing this project models to a
   real spacecraft safe mode: stable, doesn't depend on wheel count, more
   tolerant of a noisy attitude estimate than fine pointing, and (for
-  `LOW_BATTERY` specifically) *literally* the physically correct response
+  `LOW_BATTERY` specifically) _literally_ the physically correct response
   since it maximizes solar generation, not just a fallback choice.
 
-`fdir.enabled = false` inhibits *acting* on faults (autonomy off) without
-disabling *detection*, matching real ground-commandable autonomy inhibits
+`fdir.enabled = false` inhibits _acting_ on faults (autonomy off) without
+disabling _detection_, matching real ground-commandable autonomy inhibits
 used during commissioning/testing.
 
 ---
@@ -814,7 +1013,7 @@ not a missing model).
 `SolarPanel` nor `SunSensor` (in `spacecraft-dynamics-sim`) has any notion
 of eclipse — both compute purely from the geometric sun direction they're
 given, and both headers explicitly document that a scenario wanting
-eclipse-aware behavior has to gate it externally. `satellite_adcs_sim.cpp`
+eclipse-aware behavior has to gate it externally. `main.cpp`
 does this in two places: solar generation is zeroed (above), and
 `SunSensor::Reading.valid` is additionally ANDed with `!inEclipse` before
 being handed to `FSWInputs.sunSensor` — a real coarse sun sensor reports
@@ -823,7 +1022,7 @@ geometric direction is undefined. This matters beyond EPS: TRIAD fallback
 (`computeTriadFallback`, `ADCS.cpp`) requires `in.sunSensor.valid`, so
 without this gate it would happily solve a TRIAD attitude correction from
 a sun reference the satellite couldn't actually observe during eclipse.
-`StarTracker` is deliberately *not* gated by eclipse — its own blinding
+`StarTracker` is deliberately _not_ gated by eclipse — its own blinding
 model (sun-exclusion angle, slew rate) is independent of it, and a real
 star tracker generally sees better in eclipse (no sun/albedo glare), not
 worse.
@@ -844,7 +1043,7 @@ ends; this is the honest equivalent without modeling real cell chemistry —
 good enough to show "voltage sags as the battery depletes," which is the
 property anything reacting to it (FDIR, a UI panel) actually needs.
 
-**Consumption** (harness-computed each FSW cycle, `satellite_adcs_sim.cpp`):
+**Consumption** (harness-computed each FSW cycle, `main.cpp`):
 fixed loads (OBC baseline + every always-on sensor) plus effort-proportional
 actuator loads, from the commands `step()` just issued:
 
@@ -865,7 +1064,7 @@ rather than a flat idle number, matching how a real motor's draw depends
 on what it's actually being asked to do.
 
 Net power (`genW - drawW`) integrates into the battery every cycle,
-computed with the *previous* cycle's SOC as `FSWInputs.power.batterySoc`
+computed with the _previous_ cycle's SOC as `FSWInputs.power.batterySoc`
 (the same "read before this cycle's effects" relationship
 `wheelTelemetry[i].speedRadS` already has with the wheel commands about to
 be issued).

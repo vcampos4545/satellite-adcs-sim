@@ -45,6 +45,8 @@ const char *detumbleActuatorName(DetumbleActuator a)
     return "Reaction Wheels";
   case DetumbleActuator::MAGNETORQUERS_BDOT:
     return "Magnetorquers (B-dot)";
+  case DetumbleActuator::AUTO:
+    return "Auto";
   }
   return "?";
 }
@@ -119,14 +121,28 @@ void drawFswTab(ADCS &adcs, SensorTelemetry &telemetry, float trueErrDeg)
     adcs.retuneForMode();
 
   ImGui::SeparatorText("Detumble Actuator");
-  static const char *detumbleNames[] = {"Reaction Wheels", "Magnetorquers (B-dot)"};
+  static const char *detumbleNames[] = {"Reaction Wheels", "Magnetorquers (B-dot)", "Auto"};
   int detumbleIdx = static_cast<int>(adcs.detumbleActuator);
   if (ImGui::Combo("Detumble via", &detumbleIdx, detumbleNames, IM_ARRAYSIZE(detumbleNames)))
     adcs.detumbleActuator = static_cast<DetumbleActuator>(detumbleIdx);
+  if (adcs.detumbleActuator == DetumbleActuator::AUTO)
+  {
+    ImGui::TextDisabled("Uses wheels while their saturation stays under the budget below, then hands off to magnetorquers.");
+    ImGui::DragFloat("Wheel saturation budget", &adcs.detumbleWheelSaturationBudget, 0.01f, 0.0f, 1.0f, "%.2f");
+    if (adcs.effectiveMode == PointingMode::DETUMBLE)
+      ImGui::Text("Currently driving: %s", detumbleActuatorName(adcs.activeDetumbleActuator));
+  }
 
-  if (adcs.detumbleActuator == DetumbleActuator::MAGNETORQUERS_BDOT)
+  if (adcs.activeDetumbleActuator == DetumbleActuator::MAGNETORQUERS_BDOT)
   {
     ImGui::DragFloat("B-dot gain (A*m^2 per T/s)", &adcs.bdotGain, 100.0f, 0.0f, 1.0e7f, "%.0f");
     ImGui::Text("dB/dt (body): %.2f uT/s -- see Sensors tab for the field itself", glm::length(adcs.magFieldRateBody) * 1e6f);
   }
+
+  ImGui::SeparatorText("Automatic Detumble Entry");
+  ImGui::TextDisabled("ADCS's own \"tumbling too fast to usefully point\" behavior -- distinct from FDIR's");
+  ImGui::TextDisabled("EXCESS_RATE fault (a higher-threshold, ground-acknowledged anomaly backstop).");
+  ImGui::Checkbox("Auto-enter/exit DETUMBLE from body rate", &adcs.detumbleAutoTriggerEnabled);
+  ImGui::DragFloat("Entry rate (rad/s)", &adcs.detumbleEntryRateRadS, 0.01f, 0.0f, 3.0f, "%.2f");
+  ImGui::DragFloat("Exit rate (rad/s)", &adcs.detumbleExitRateRadS, 0.01f, 0.0f, 3.0f, "%.2f");
 }

@@ -7,7 +7,8 @@
 
 void PIDController::autoTune(glm::mat3 inertiaTensor,
                              float settlingTime,
-                             float dampingRatio)
+                             float dampingRatio,
+                             float maxControlTorqueNm)
 {
   float I =
       (inertiaTensor[0][0] +
@@ -15,7 +16,16 @@ void PIDController::autoTune(glm::mat3 inertiaTensor,
        inertiaTensor[2][2]) /
       3.0f;
 
-  float omega_n = 4.0f / (dampingRatio * settlingTime);
+  // omega_n purely from the requested settling time, then capped so the
+  // peak commanded torque at a worst-case (antipodal, theta_max = pi)
+  // attitude error with zero rate -- Kp*theta_max = I*omega_n^2*pi --
+  // never exceeds maxControlTorqueNm. If the request was already
+  // achievable within budget this is a no-op; otherwise the actual
+  // settling time achieved is longer than requested, self-derived from
+  // real actuator authority instead of a second hardcoded constant.
+  float omega_n_requested = 4.0f / (dampingRatio * settlingTime);
+  float omega_n_torque_limit = std::sqrt(maxControlTorqueNm / (I * glm::pi<float>()));
+  float omega_n = std::min(omega_n_requested, omega_n_torque_limit);
 
   Kp = I * omega_n * omega_n;
   Kd = 2.0f * dampingRatio * I * omega_n;
@@ -72,12 +82,22 @@ void PIDController::reset()
 void CascadedController::autoTune(glm::mat3 inertiaTensor_,
                                   float settlingTime_,
                                   float dampingRatio_,
-                                  float omega_max_)
+                                  float omega_max_,
+                                  float maxControlTorqueNm)
 {
   inertiaTensor = inertiaTensor_;
-  settlingTime = settlingTime_;
   dampingRatio = dampingRatio_;
   omega_max = omega_max_;
+
+  // Same torque-vs-worst-case-error derivation as PIDController::autoTune
+  // -- store the *achieved* settling time (possibly longer than
+  // requested) rather than settlingTime_ directly, since
+  // computeControlTorque() derives omega_n from `settlingTime` each call.
+  float I = (inertiaTensor[0][0] + inertiaTensor[1][1] + inertiaTensor[2][2]) / 3.0f;
+  float omega_n_requested = 4.0f / (dampingRatio * settlingTime_);
+  float omega_n_torque_limit = std::sqrt(maxControlTorqueNm / (I * glm::pi<float>()));
+  float omega_n = std::min(omega_n_requested, omega_n_torque_limit);
+  settlingTime = 4.0f / (dampingRatio * omega_n);
 }
 
 glm::vec3 CascadedController::computeControlTorque(
@@ -140,7 +160,8 @@ glm::vec3 CascadedController::computeControlTorque(
 void LQRController::autoTune(glm::mat3 inertiaTensor,
                              float settlingTime,
                              float dampingRatio,
-                             float omega_max_)
+                             float omega_max_,
+                             float maxControlTorqueNm)
 {
   omega_max = omega_max_;
 
@@ -167,7 +188,14 @@ void LQRController::autoTune(glm::mat3 inertiaTensor,
     // Target the same closed-loop pole location PIDController::autoTune uses, so
     // the resulting gains land in the same physical (torque) range the actuators
     // can actually deliver, instead of being an arbitrary, unscaled Q/R pair.
-    float omega_n = 4.0f / (dampingRatio * settlingTime);
+    // Per-axis torque clamp (not the average I PID/Cascaded use) -- this
+    // axis's own I is what determines its own worst-case peak torque, and
+    // LQR already solves gains per-axis, so a per-axis ceiling is more
+    // correct here, not just consistent for its own sake. Same derivation
+    // as PIDController::autoTune otherwise.
+    float omega_n_requested = 4.0f / (dampingRatio * settlingTime);
+    float omega_n_torque_limit = std::sqrt(maxControlTorqueNm / (I * glm::pi<float>()));
+    float omega_n = std::min(omega_n_requested, omega_n_torque_limit);
     float KpTarget = I * omega_n * omega_n;
     float KdTarget = 2.0f * dampingRatio * I * omega_n;
 

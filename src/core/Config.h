@@ -6,35 +6,43 @@
 // ---------------------------------------------------------------------------
 namespace Config
 {
-  // Satellite is a real 0.1m cubesat at a real ~6.9e6m orbital radius --
-  // rendered at its actual size, it would be a sub-pixel dot from any
-  // camera distance that also shows Earth. SATELLITE_VISUAL_SCALE
-  // inflates every *drawn* dimension of the satellite (wireframe/wheels/
-  // rods/arrows/mirror/grid/field arrows) around its real position, same
-  // "not to scale but at the right place" idea already used for the sun
-  // marker/B-field arrows -- it never touches the physical quantities
-  // (RigidBody size, wheel inertia, mount offsets used for actual
-  // dynamics) any of the FSW/physics math is computed from, only what
-  // gets handed to the renderer. Applied as: draw the true local geometry
-  // scaled up around the satellite's real center, i.e.
-  // `satPos + (trueOffset) * SATELLITE_VISUAL_SCALE` for anything offset
-  // from center, and `trueSize * SATELLITE_VISUAL_SCALE` for anything
-  // sized -- see drawSatelliteWireframe/drawReactionWheels/etc.
-  constexpr float SATELLITE_VISUAL_SCALE = 100000.0f;
+  // Satellite is a real 18m x 18m deployable mirror at a real ~6.9e6m
+  // orbital radius -- rendered at its actual size, it would still be a
+  // sub-pixel dot from any camera distance that also shows Earth.
+  // SATELLITE_VISUAL_SCALE inflates every *drawn* dimension of the
+  // satellite (wireframe/wheels/rods/arrows/bus/grid/field arrows) around
+  // its real position, same "not to scale but at the right place" idea
+  // already used for the sun marker/B-field arrows -- it never touches
+  // the physical quantities (RigidBody size, wheel inertia, mount offsets
+  // used for actual dynamics) any of the FSW/physics math is computed
+  // from, only what gets handed to the renderer. Applied as: draw the
+  // true local geometry scaled up around the satellite's real center,
+  // i.e. `satPos + (trueOffset) * SATELLITE_VISUAL_SCALE` for anything
+  // offset from center, and `trueSize * SATELLITE_VISUAL_SCALE` for
+  // anything sized -- see drawSatelliteWireframe/drawReactionWheels/etc.
+  //
+  // Value derived to preserve the same relative on-screen framing the
+  // original 0.1m cubesat had (rather than an independent guess):
+  // `realSize * SATELLITE_VISUAL_SCALE` roughly constant ->
+  // 100000 * (0.1 / 18) ~= 556, rounded to 550.
+  constexpr float SATELLITE_VISUAL_SCALE = 550.0f;
 
   // Camera: follows the satellite's real ECI position (see main()'s
   // orbit.setTarget() call each frame), so distances are tuned for a
   // scene that spans everything from the now-visually-inflated satellite
   // up to a ~6.9e6m orbital radius in the same world.
   //
-  // MIN/INITIAL_DISTANCE are derived from SATELLITE_VISUAL_SCALE rather
-  // than independent constants, so they can't drift out of sync with it
-  // again if that scale ever changes: the satellite's own drawn geometry
-  // reaches SATELLITE_VISUAL_SCALE * 0.25 from its center (the body-axis
-  // arrows, drawSatelliteWireframe's largest extent), so MIN_DISTANCE
-  // (0.5x the full scale, 2x the arrows' own reach) keeps the camera from
+  // MIN/INITIAL_DISTANCE are derived from the satellite's own drawn
+  // geometry rather than independent constants, so they can't drift out
+  // of sync with it if that geometry ever changes. For the 18m x 18m
+  // mirror plate, the largest extent from center is the plate's own
+  // half-diagonal (not the body-axis arrows, which were the largest
+  // extent for the old 0.1m cube -- an assumption that no longer holds
+  // now that the drawn body itself is far bigger than those arrows).
+  // MIN_DISTANCE (2x that half-diagonal, scaled) keeps the camera from
   // ending up inside the satellite's inflated geometry when fully zoomed
-  // in.
+  // in; INITIAL_DISTANCE (1.6x MIN_DISTANCE) preserves the same
+  // min:initial ratio the old cubesat tuning used.
   //
   // MAX_DISTANCE must stay well *inside* CAMERA_FAR: OrbitalCamera clamps
   // `distance` to [MIN_DISTANCE, MAX_DISTANCE], and if that range extends
@@ -56,8 +64,9 @@ namespace Config
   constexpr float CAMERA_NEAR = 10.0f;
   constexpr float CAMERA_FAR = 2.0e11f;
   constexpr float CAMERA_FOV = 45.0f;
-  constexpr float CAMERA_INITIAL_DISTANCE = SATELLITE_VISUAL_SCALE * 0.8f;
-  constexpr float CAMERA_MIN_DISTANCE = SATELLITE_VISUAL_SCALE * 0.5f;
+  constexpr float SATELLITE_HALF_DIAGONAL_M = 12.7279f; // 0.5*sqrt(18^2 + 18^2), real (pre-scale) mirror half-diagonal
+  constexpr float CAMERA_MIN_DISTANCE = SATELLITE_HALF_DIAGONAL_M * SATELLITE_VISUAL_SCALE * 2.0f;
+  constexpr float CAMERA_INITIAL_DISTANCE = CAMERA_MIN_DISTANCE * 1.6f;
   constexpr float CAMERA_MAX_DISTANCE = 1.0e8f;
   constexpr float ZOOM_SENSITIVITY = 1.0f;
   constexpr float PAN_SENSITIVITY = 0.2f;
@@ -137,6 +146,21 @@ namespace Config
 
   constexpr float TUMBLE_KICK_RAD_S = 1.5f;
 
+  // Initial post-deployment tumble: a real cubesat separates from its
+  // dispenser with real nonzero angular momentum, applied once at startup
+  // as a per-axis uniform kick (range [-R, R] per axis), same shape as the
+  // manual "Kick into random tumble" button above -- deliberately a
+  // separate constant from TUMBLE_KICK_RAD_S (a deliberate stress-test
+  // magnitude for that button). For X ~ Uniform(-R, R) per axis, the
+  // expected 3-axis vector magnitude is exactly R (E[|v|^2] = 3*E[X^2] =
+  // 3*(R^2/3) = R^2), so R=1.6 gives a typical total tumble rate around
+  // ADCS's own automatic-detumble-entry threshold (see ADCS.h's
+  // detumbleEntryRateRadS, 1.3) with real margin, while a worst-case draw
+  // (all three axes near +-R at once, |v| up to R*sqrt(3) =~ 2.77) stays
+  // a rare tail rather than the typical case relative to FDIR's own
+  // excessRateRadS anomaly backstop (2.0).
+  constexpr float DEPLOYMENT_TUMBLE_RATE_RAD_S = 1.6f;
+
   // Nominal FSW cycle period (20 Hz) -- the single shared rate orbit
   // propagation, PhysicsWorld::step(), and one FlightSoftware::step() cycle
   // all advance by together, once per main()-loop iteration (see its own
@@ -147,12 +171,21 @@ namespace Config
 
   // Spacecraft mass/cross-section for the truth propagator's atmospheric
   // drag and solar radiation pressure force models -- matches
-  // buildCubesatPyramid()'s real 1U body (0.1m cube, 1.33kg max mass).
-  // Duplicated here rather than read off `sat.body` because the orbit
-  // force models are constructed once at startup, before the mission
-  // loop that could otherwise keep them in sync with a changing body.
-  constexpr double SPACECRAFT_MASS_KG = 1.33;
-  constexpr double SPACECRAFT_CROSS_SECTION_M2 = 0.1 * 0.1; // one 10x10cm face
+  // buildCubesatPyramid()'s real composite mirror+bus mass (75kg, see
+  // its own header comment for the mirror/bus mass breakdown) and the
+  // mirror's full 18m x 18m face area. Duplicated here rather than read
+  // off `sat.body` because the orbit force models are constructed once
+  // at startup, before the mission loop that could otherwise keep them
+  // in sync with a changing body.
+  //
+  // At this cross-section, SRP is no longer a minor perturbation: a
+  // reflective 324 m^2 mirror sees ~2.9 mN of radiation pressure force at
+  // 1 AU (P = 2*SOLAR_FLUX_WM2/c for a reflecting surface, times area) --
+  // small in absolute terms but large relative to a 75kg spacecraft
+  // compared to the old 1.33kg/0.01m^2 cubesat, so visibly larger SRP-
+  // driven orbital perturbation than before is expected, not a bug.
+  constexpr double SPACECRAFT_MASS_KG = 75.0;
+  constexpr double SPACECRAFT_CROSS_SECTION_M2 = 18.0 * 18.0; // mirror's full face area
 
   // Global dipole field-line visualization (see traceDipoleFieldLines):
   // seed colatitudes/azimuths (both hemispheres) for the traced loops, an
@@ -165,10 +198,15 @@ namespace Config
   constexpr int FIELD_LINE_MAX_POINTS = 200;
   constexpr float FIELD_LINE_MAX_RADIUS_FRAC_EARTH_RADIUS = 12.0f; // safety cutoff for open-looking loops
 
-  // A flat mirror mounted on the +Z face (same axis every pointing mode
-  // aims), just for visualizing the sun-reflection geometry -- not wired
-  // into ADCS/guidance at all.
-  const glm::vec3 MIRROR_SIZE{0.09f, 0.09f, 0.003f}; // thin along its own normal (local Z)
+  // The real RigidBody *is* the 18m x 18m mirror plate now (see
+  // buildCubesatPyramid()), so its own +Z face is the actual reflecting
+  // surface -- MIRROR_NORMAL_BODY still names that axis for
+  // drawSunReflection()'s geometry. BUS_SIZE is purely a decorative box
+  // mounted just behind the plate (-Z), representing the small bus core
+  // sitting at the mirror's center -- not a second RigidBody, not part of
+  // physics, same "visualization only" role the old decorative mirror
+  // box used to play before the real body became the mirror itself.
+  const glm::vec3 BUS_SIZE{0.5f, 0.5f, 0.5f};
   const glm::vec3 MIRROR_NORMAL_BODY{0.0f, 0.0f, 1.0f};
   constexpr float REFLECTED_RAY_LENGTH = 1.0f;
 

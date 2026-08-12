@@ -6,10 +6,11 @@
 #include <vector>
 
 // ---------------------------------------------------------------------------
-// Satellite-local 3D draw helpers: the body wireframe, reaction wheels,
-// magnetorquers, and the (non-physical, visualization-only) sun-reflection
-// mirror -- everything drawn relative to the satellite's own body frame and
-// scaled by Config::SATELLITE_VISUAL_SCALE. See MagneticFieldRenderer.h/
+// Satellite-local 3D draw helpers: the body wireframe (the real 18m x 18m
+// mirror plate), reaction wheels, magnetorquers, the (non-physical,
+// visualization-only) bus box, and the sun-reflection geometry --
+// everything drawn relative to the satellite's own body frame and scaled
+// by Config::SATELLITE_VISUAL_SCALE. See MagneticFieldRenderer.h/
 // OrbitRenderer.h for the global (Earth-scale) visualizations.
 // ---------------------------------------------------------------------------
 
@@ -30,10 +31,12 @@ void drawReactionWheels(GUI &gui, const std::vector<ReactionWheel *> &reactionWh
 // the currently commanded dipole moment.
 void drawMagnetorquers(GUI &gui, const std::vector<Magnetorquer *> &magnetorquers, RigidBody *sat);
 
-// A flat mirror bolted to the +Z face, purely for visualizing sun-
-// reflection geometry -- see Config::MIRROR_* and drawSunReflection().
-// Not a physics body and not wired into ADCS/guidance at all.
-void drawMirror(GUI &gui, RigidBody *sat);
+// A small decorative box mounted just behind the body's -Z face,
+// representing the bus core at the center of the real 18m x 18m mirror
+// plate `sat` itself now is -- see Config::BUS_SIZE. Not a physics body,
+// purely visual (the composite mirror+bus mass/inertia is already baked
+// into `sat` by buildCubesatPyramid()).
+void drawBus(GUI &gui, RigidBody *sat);
 
 // Draws the incoming ray from the sun to the mirror, and the outgoing
 // (reflected) ray away from it, via the ordinary law of reflection
@@ -41,5 +44,7 @@ void drawMirror(GUI &gui, RigidBody *sat);
 // The reflected ray is only drawn when the mirror's front face is
 // actually sun-facing -- reflecting a ray that's hitting the mirror's
 // back would be nonsense, not just an unlikely case a real mirror can't
-// do either.
+// do either. `sat` itself is the mirror (its +Z face, MIRROR_NORMAL_BODY),
+// so the reflection geometry originates directly from its position/
+// orientation -- no separate mount offset needed.
 void drawSunReflection(GUI &gui, RigidBody *sat, const glm::vec3 &sunPosition);

@@ -1,8 +1,8 @@
-# satellite-adcs-sim
+# main
 
 A closed-loop cubesat ADCS (attitude determination and control system) / flight-software simulation: a single high-fidelity satellite, its sensors, its actuators, and the flight software driving them, all running against a real 6-DOF rigid-body physics engine.
 
-**Scope.** This project answers single-vehicle GNC/flight-software questions — attitude estimation and control, actuator allocation and fault handling, momentum management, and (now) real single-satellite orbital dynamics — for one satellite at a time. The scale boundary is the point, not whether orbital motion exists at all: it deliberately does not do orbit-*level mission design* (constellation architecture, coverage across many satellites, station-keeping maneuver planning, conjunction screening); that's a different fidelity/scale problem (one high-fidelity vehicle vs. thousands of low-fidelity trajectories) solved by a separate project, [constellation-sim](https://github.com/vcampos4545/constellation-sim).
+**Scope.** This project answers single-vehicle GNC/flight-software questions — attitude estimation and control, actuator allocation and fault handling, momentum management, and (now) real single-satellite orbital dynamics — for one satellite at a time. The scale boundary is the point, not whether orbital motion exists at all: it deliberately does not do orbit-_level mission design_ (constellation architecture, coverage across many satellites, station-keeping maneuver planning, conjunction screening); that's a different fidelity/scale problem (one high-fidelity vehicle vs. thousands of low-fidelity trajectories) solved by a separate project, [constellation-sim](https://github.com/vcampos4545/constellation-sim).
 
 This project itself builds on [spacecraft-dynamics-sim](https://github.com/vcampos4545/spacecraft-dynamics-sim), a generic rigid-body physics engine (bodies, constraints, actuators, sensors, and — since this project needed real orbital dynamics — a double-precision `rigidbody/orbit/` module) with no spacecraft- or flight-software-specific code in it — fetched as a dependency, not vendored. See `docs/ALGORITHMS.md`'s "Orbital Mechanics" section for how this project uses it.
 
@@ -13,6 +13,7 @@ This project itself builds on [spacecraft-dynamics-sim](https://github.com/vcamp
 **Estimation**: a multiplicative EKF (state = attitude + gyro bias, propagated via strapdown quaternion kinematics) with the star tracker as the primary correction and a sun+magnetometer TRIAD solve as the fallback when it's unavailable — including live tracking of the estimator's own uncertainty, not just a point estimate.
 
 **Actuators**: a 4-wheel reaction wheel pyramid and a 3-axis magnetorquer cluster, with:
+
 - Three attitude controllers (PID, LQR, cascaded P/rate) selectable live, each auto-tuned from the vehicle's actual inertia and a settling-time/damping-ratio target.
 - B-dot magnetic detumbling for post-deployment tumble recovery.
 - Cross-product-law momentum desaturation, running automatically in the background (not a mode) whenever wheel saturation gets close, with headroom-aware gain scaling so the desaturation maneuver itself can't destabilize pointing.
@@ -38,17 +39,17 @@ Fetches `rigidbody` (spacecraft-dynamics-sim), VGL, and Dear ImGui from GitHub �
 ## Run
 
 ```bash
-./build/satellite-adcs-sim
+./build/main
 ```
 
 **Controls**:
 
-| Key | Action |
-|---|---|
-| `1`-`7` | Pointing mode: Nadir / Sun / Detumble / Target / Slew / Fine / Reflect |
-| `Space` | New random target (Target/Slew/Fine/Reflect modes) |
-| `T` | Kick the body into a random tumble (to test Detumble) |
-| Left-drag | Orbit camera |
-| Scroll | Zoom |
+| Key       | Action                                                                 |
+| --------- | ---------------------------------------------------------------------- |
+| `1`-`7`   | Pointing mode: Nadir / Sun / Detumble / Target / Slew / Fine / Reflect |
+| `Space`   | New random target (Target/Slew/Fine/Reflect modes)                     |
+| `T`       | Kick the body into a random tumble (to test Detumble)                  |
+| Left-drag | Orbit camera                                                           |
+| Scroll    | Zoom                                                                   |
 
 Everything else — controller algorithm/gains, detumble actuator, manual actuator override, desaturation thresholds, simulation pause — is in the ImGui panel.
