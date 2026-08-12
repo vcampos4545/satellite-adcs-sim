@@ -1,5 +1,4 @@
 #include "SimulationPanel.h"
-#include "core/Config.h"
 #include <imgui.h>
 #include <random>
 #include <algorithm>
@@ -8,21 +7,6 @@
 void drawSimulationTab(SimControls &sim, EpochControls &epoch,
                        std::vector<ReactionWheel *> &wheels, RigidBody *body, ADCS &adcs)
 {
-  ImGui::SeparatorText("Time Controls");
-  ImGui::Checkbox("Pause", &sim.paused);
-  ImGui::TextDisabled("Physics and FSW freeze; camera/UI stay live.");
-
-  ImGui::BeginDisabled(!sim.paused);
-  if (ImGui::Button("Step"))
-    sim.stepRequested = true;
-  ImGui::EndDisabled();
-  ImGui::SameLine();
-  ImGui::TextDisabled("(advances one %.2fs simulated step, then re-pauses; only while paused)", Config::TIME_STEP_S);
-
-  ImGui::DragFloat("Speed", &sim.timeScale, 0.5f, 0.1f, 100.0f, "%.1fx", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
-  ImGui::TextDisabled("Scales simulated time per real second -- applies uniformly to orbit,");
-  ImGui::TextDisabled("physics, and the FSW cycle together, so control behavior stays correct at any speed.");
-
   ImGui::SeparatorText("Mission Epoch (UTC)");
   ImGui::TextDisabled("What real calendar date orbitState's mission clock started at --");
   ImGui::TextDisabled("Sun direction and Earth's rendered rotation both follow this live.");

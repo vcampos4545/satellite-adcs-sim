@@ -98,6 +98,8 @@ target_link_libraries(fsw PUBLIC glm::glm)
 add_executable(satellite-adcs-sim
   src/core/satellite_adcs_sim.cpp
   src/core/Cubesat.cpp
+  src/core/SimulationState.cpp
+  src/core/Fsw.cpp
   src/core/GroundStations.cpp
   src/rendering/SatelliteRenderer.cpp
   src/rendering/MagneticFieldRenderer.cpp

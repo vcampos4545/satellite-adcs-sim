@@ -137,6 +137,13 @@ Do not add comments to every function or line.
 
 When modifying existing code, do not rewrite unrelated comments.
 
+Keep comments short — a line or two. Do not write paragraph-length
+comments that explain the full history/reasoning/every ramification of a
+change; that belongs in the PR description or commit message, not inline.
+If a comment needs more than ~3 lines to make its point, the point is
+probably too niche to justify a permanent comment, or the explanation
+belongs in `docs/ALGORITHMS.md` instead.
+
 For physics and numerical algorithms, document important:
 
 - equations

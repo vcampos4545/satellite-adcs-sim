@@ -1,4 +1,5 @@
 #include "Cubesat.h"
+#include "Config.h"
 #include <glm/gtc/constants.hpp>
 #include <cmath>
 #include <memory>
@@ -152,4 +153,26 @@ void Cubesat::applyActuatorCommands(const FSWOutputs &out)
     wheels[i]->commandTorque(out.wheelCommands[i].torqueNm);
   for (int i = 0; i < NUM_TORQUERS; i++)
     magnetorquers[i]->commandDipoleMoment(out.torquerCommands[i].momentAm2);
+}
+
+float Cubesat::updatePower(float dt, const FSWOutputs &out)
+{
+  float genW = 0.0f;
+  if (!inEclipse)
+    for (const SolarPanel &panel : solarPanels)
+      genW += panel.sample(*body, sunDirWorld, Config::SOLAR_FLUX_WM2).powerW;
+
+  float drawW = Config::POWER_OBC_BASELINE_W + Config::POWER_IMU_W +
+                Config::POWER_MAGNETOMETER_W + Config::POWER_STAR_TRACKER_W +
+                Config::POWER_SUN_SENSOR_W;
+  for (int i = 0; i < NUM_WHEELS; i++)
+    drawW += Config::WHEEL_IDLE_POWER_W +
+             std::abs(out.wheelCommands[i].torqueNm * wheels[i]->currentSpeed) / Config::WHEEL_MOTOR_EFFICIENCY;
+  for (int i = 0; i < NUM_TORQUERS; i++)
+    drawW += Config::TORQUER_IDLE_POWER_W +
+             std::abs(out.torquerCommands[i].momentAm2) * Config::TORQUER_POWER_PER_AM2_W;
+
+  float netW = genW - drawW;
+  battery.update(netW, dt);
+  return netW;
 }

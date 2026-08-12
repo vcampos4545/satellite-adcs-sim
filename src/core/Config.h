@@ -140,8 +140,7 @@ namespace Config
   // Nominal FSW cycle period (20 Hz) -- the single shared rate orbit
   // propagation, PhysicsWorld::step(), and one FlightSoftware::step() cycle
   // all advance by together, once per main()-loop iteration (see its own
-  // fixed-step accumulator). Also the fixed simulated-time increment
-  // SimulationPanel's "Step" button advances by while paused.
+  // fixed-step accumulator).
   constexpr float TIME_STEP_S = 0.05f;
 
   constexpr int TELEMETRY_HISTORY_SAMPLES = 300;

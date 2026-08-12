@@ -61,6 +61,14 @@ struct Cubesat
   // Applies FlightSoftware::step()'s output to the simulated wheels/
   // magnetorquers.
   void applyActuatorCommands(const FSWOutputs &out);
+
+  // EPS accounting: solar generation (cosine law, zero in eclipse) minus
+  // housekeeping/sensor draw plus each actuator's idle-plus-effort power
+  // for `out` -- see Config::POWER_* for the model each term follows.
+  // Integrates net power into `battery` and returns it (net watts) for the
+  // caller's own telemetry. Reads `sunDirWorld`/`inEclipse` from this
+  // object's own fields (set by the harness alongside the others above).
+  float updatePower(float dt, const FSWOutputs &out);
 };
 
 // Builds the simulated hardware AND the matching HardwareConfig ADCS::

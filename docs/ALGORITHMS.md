@@ -68,27 +68,41 @@ against nothing but `glm` (see `tests/CMakeLists.txt`).
 
 The satellite's real orbital position/velocity is truth-propagated by
 `spacecraft-dynamics-sim`'s `rigidbody/orbit/` module (double precision,
-`glm::dvec3`/`glm::dquat`), owned and stepped by this project's harness
-(`satellite_adcs_sim.cpp`) — not by `ADCS`, which stays hardware-abstracted
-and only ever sees the derived quantities below, and not by
-`PhysicsWorld`'s own integration, which stays float32.
+`glm::dvec3`/`glm::dquat`) as part of `PhysicsWorld::step()` itself, via
+the engine's **orbital mode**: `PhysicsWorld::attachCelestialSystem()` +
+`setOrbitalMode()` puts a body's *translational* state under a
+`CelestialSystem`-driven RK4 propagation (two-body toward its primary,
+`CelestialPerturbation` for each other body in the system), while its
+*rotational* dynamics (orientation, angular velocity, actuator
+`ForceGenerator`s) keep integrating exactly like any other `RigidBody`.
+`SimulationState::buildSimulationState()` (`src/core/SimulationState.h`/
+`.cpp`) builds a Sun → Earth → Moon `CelestialSystem` (Earth/Moon reuse the
+existing low-precision `SunModel`/`MoonModel` analytic ephemeris as their
+parent-relative position) and puts the spacecraft in orbital mode around
+Earth, perturbed by the Sun and Moon — the same "build once at setup" role
+`buildCubesatPyramid()` plays for the spacecraft itself. `ADCS` never sees
+any of this directly — it stays hardware-abstracted, only ever reading the
+derived quantities below (fed to it by `Fsw::step()`, `src/core/Fsw.h`/
+`.cpp`).
 
-**One fixed-rate loop drives orbit propagation, `PhysicsWorld::step()`, and
-one `FlightSoftware` cycle together**, in that order, once per
-`Config::TIME_STEP_S` (`main()`'s FSW block): `orbitPropagator.step()` →
-environment sampling (sun/eclipse/ground-station-target/ambient field) →
-`world.step()` (rotational dynamics, integrating whatever actuator
-commands `Cubesat::applyActuatorCommands()` issued at the *end* of the
-previous cycle — zero-order hold, the standard discretization for a
-sampled control loop) → `Cubesat::sampleSensors()` →
-`flightSoftware.step()` → `Cubesat::applyActuatorCommands()`. Keeping
-orbit propagation and `world.step()` immediately adjacent inside the same
-loop iteration (rather than, e.g., orbit propagation running once per
-render frame while `world.step()` runs separately after an inner FSW
-sub-loop) is deliberate: it's what makes physics and FSW share one
-consistent per-cycle view of the world, and what guarantees every
-actuator command a control cycle issues actually gets integrated by
-`world.step()` before the next one runs.
+**One fixed-rate loop drives `SimulationState::step()` and one `Fsw` cycle
+together**, in that order, once per `Config::TIME_STEP_S`
+(`main()`): `sim.step(dt)` — `world.step(dt)` (propagates the Sun/Earth/
+Moon hierarchy and the spacecraft's orbital-mode state, then integrates
+rotational dynamics against whatever actuator commands
+`Cubesat::applyActuatorCommands()` issued at the *end* of the previous
+cycle — zero-order hold, the standard discretization for a sampled control
+loop), followed by refreshing `SimulationState`'s own cached eclipse/
+field/sun-direction quantities from `world.isInEclipse()`/
+`ambientFieldAt()`/`absolutePosition()` queries — then `fsw.step(dt)` —
+ground-station target selection, `Cubesat::sampleSensors()` →
+`flightSoftware.step()` → `Cubesat::applyActuatorCommands()`, EPS, and
+telemetry. Keeping orbit propagation and rotational dynamics inside the
+same `world.step()` call (rather than two separately-scheduled systems the
+harness has to keep in sync by hand) is what guarantees every actuator
+command a control cycle issues actually gets integrated before the next
+one runs, and is what lets `SimulationState`/`Fsw` *read* eclipse/field/
+sun-direction as `PhysicsWorld` query results instead of re-deriving them.
 
 **Double-precision truth, bridged into `RigidBody` every FSW cycle**: a
 LEO orbital radius (~6.9e6 m) leaves float32 with only meter-level

@@ -8,23 +8,8 @@
 // belong to the test harness around the spacecraft, not to the spacecraft
 // itself. Held by value in main() and handed to drawSimulationTab() by
 // reference each frame, same pattern as ADCS's own public fields.
-//
-// Time controls (paused/timeScale/stepRequested): main()'s simulation
-// block advances by `simDt = realDt * timeScale` each frame while
-// !paused; while paused, a single step of Config::TIME_STEP_S is taken
-// instead if stepRequested is set (then main() clears it back to false --
-// this is a one-shot request, not a held state). timeScale applies
-// uniformly to orbit propagation, physics, and the FSW cycle timer
-// together, not just wall-clock display, so relative rates between them
-// (e.g. how many ADCS cycles happen per orbit) stay physically correct
-// at any speed -- see main()'s own comment on why the FSW cycle loop is a
-// `while`, not an `if`, once timeScale can make simDt span multiple
-// nominal ADCS cycles in one frame.
 struct SimControls
 {
-  bool paused = false;
-  float timeScale = 1.0f;
-  bool stepRequested = false;
   float tumbleKickRadS;
 
   explicit SimControls(float tumbleKickRadSIn) : tumbleKickRadS(tumbleKickRadSIn) {}
