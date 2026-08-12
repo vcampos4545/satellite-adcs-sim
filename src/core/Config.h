@@ -65,6 +65,18 @@ namespace Config
   constexpr float SUN_SENSOR_SAMPLE_PERIOD_S = 0.1f;   // 10 Hz -- coarse analog sensor polled over a bus
   constexpr float POWER_SAMPLE_PERIOD_S = 1.0f;        // 1 Hz -- typical I2C fuel-gauge IC polling rate
 
+  // Caps how much simulated backlog (SimControls::timeScale-scaled real
+  // elapsed time) main()'s fixed-step accumulator will process in a single
+  // render frame, the same "spiral of death" clamp PhysicsWorld::step()
+  // already applies to its own inner accumulator (see its 0.2f). Without
+  // this, a high timeScale (or a real stall -- a breakpoint, a window
+  // resize) would make the accumulator demand hundreds of catch-up
+  // FSW/physics steps in one frame, freezing rendering until it works
+  // through the backlog. With it, the sim instead falls behind smoothly --
+  // simulated time advances at whatever this cap allows per real second
+  // rather than truly matching timeScale exactly during a stall.
+  constexpr float FSW_TIMER_MAX_S = 1.0f; // at most 1s / TIME_STEP_S = 20 FSW steps per render frame
+
   constexpr int TELEMETRY_HISTORY_SAMPLES = 300;
 
   // Satellite

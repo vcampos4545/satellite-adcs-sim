@@ -6,6 +6,7 @@
 #include "rendering/WorldAxesGizmo.h"
 #include "panels/GroundStationsPanel.h"
 #include "panels/ADCSPanel.h"
+#include "panels/FpsOverlay.h"
 #include <rigidbody/orbit/SunModel.h>
 #include <rigidbody/orbit/MoonModel.h>
 #include <rigidbody/orbit/OrbitFrames.h>
@@ -223,4 +224,6 @@ void Simulation::draw(GUI &gui, FlightSoftware &fsw, int &selectedPassIndex)
   drawADCSPanel(fsw, spacecraft, telemetry, simControls, epoch, vis,
                 world.orbitalState(spacecraft.body), earthTexture, groundTrackLatLonDeg, currentJdNow,
                 groundStationPasses, selectedPassIndex, fsw.trueErrDeg, inEclipse);
+
+  drawFpsOverlay();
 }

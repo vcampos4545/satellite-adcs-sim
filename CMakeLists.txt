@@ -131,6 +131,7 @@ add_executable(main
   src/panels/SimulationPanel.cpp
   src/panels/VisualizationPanel.cpp
   src/panels/ADCSPanel.cpp
+  src/panels/FpsOverlay.cpp
 )
 # PRIVATE src (the root, not a specific subfolder) -- executable-only code
 # reaches across the core/fsw/rendering/panels split via folder-qualified

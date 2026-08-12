@@ -11,6 +11,7 @@
 int main()
 {
   GUI gui(800, 600, "Satellite Simulator");
+  glfwSwapInterval(1); // vsync on by default; toggled live via sim.simControls.vsyncEnabled (Simulation tab)
   ImGuiLayer imguiLayer(gui);
   gui.camera
       .setUp({0, 0, 1})
@@ -42,7 +43,13 @@ int main()
     glm::vec2 scrollDelta = gui.getScrollDelta();
 
     // Update
-    fswTimer += dt;
+    fswTimer += dt * sim.simControls.timeScale;
+    // Caps how much backlog one frame will catch up on -- see its own
+    // comment in Config.h. Without this, a high timeScale (or a real
+    // stall) would demand hundreds of catch-up steps in a single frame
+    // and freeze rendering until it worked through them.
+    if (fswTimer > Config::FSW_TIMER_MAX_S)
+      fswTimer = Config::FSW_TIMER_MAX_S;
     while (fswTimer > Config::TIME_STEP_S)
     {
       fswTimer -= Config::TIME_STEP_S;
@@ -54,6 +61,10 @@ int main()
 
     sim.handleCameraInput(gui, mouseDelta, scrollDelta);
     sim.refreshGroundStationPasses(dt);
+
+    // Live-toggleable (Simulation tab) -- cheap to call every frame; only
+    // actually changes driver state when the checkbox flips.
+    glfwSwapInterval(sim.simControls.vsyncEnabled ? 1 : 0);
 
     // Draw
     gui.beginFrame();

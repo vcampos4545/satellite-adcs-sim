@@ -7,6 +7,31 @@
 void drawSimulationTab(SimControls &sim, EpochControls &epoch,
                        std::vector<ReactionWheel *> &wheels, RigidBody *body, ADCS &adcs)
 {
+  ImGui::SeparatorText("Time Controls");
+  ImGui::TextDisabled("Scales real elapsed time before it reaches the fixed-rate FSW/physics loop --");
+  ImGui::TextDisabled("each step is still exactly Config::TIME_STEP_S; this just changes how many");
+  ImGui::TextDisabled("happen per real second. Falls behind smoothly (not a freeze) if a value here");
+  ImGui::TextDisabled("would need more steps per frame than Config::FSW_TIMER_MAX_S allows.");
+  ImGui::SliderFloat("Time Scale", &sim.timeScale, 0.0f, 500.0f, "%.1fx");
+  if (ImGui::Button("Pause"))
+    sim.timeScale = 0.0f;
+  ImGui::SameLine();
+  if (ImGui::Button("1x"))
+    sim.timeScale = 1.0f;
+  ImGui::SameLine();
+  if (ImGui::Button("10x"))
+    sim.timeScale = 10.0f;
+  ImGui::SameLine();
+  if (ImGui::Button("60x"))
+    sim.timeScale = 60.0f;
+  ImGui::SameLine();
+  if (ImGui::Button("200x"))
+    sim.timeScale = 200.0f;
+
+  ImGui::Checkbox("VSync", &sim.vsyncEnabled);
+  ImGui::TextDisabled("Uncheck for an uncapped render rate -- e.g. to read true render performance");
+  ImGui::TextDisabled("off the FPS overlay instead of the display's refresh rate.");
+
   ImGui::SeparatorText("Mission Epoch (UTC)");
   ImGui::TextDisabled("What real calendar date orbitState's mission clock started at --");
   ImGui::TextDisabled("Sun direction and Earth's rendered rotation both follow this live.");

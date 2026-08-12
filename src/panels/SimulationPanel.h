@@ -12,6 +12,21 @@ struct SimControls
 {
   float tumbleKickRadS;
 
+  // Multiplies real elapsed time before main()'s fixed-step accumulator
+  // sees it -- 1.0 = real-time, 0.0 = paused. The FSW/physics step itself
+  // always advances by exactly Config::TIME_STEP_S regardless of this
+  // value (so EKF/controller tuning stays valid at any speed); this only
+  // changes how many of those fixed steps happen per real second. See
+  // Config::FSW_TIMER_MAX_S for the per-frame cap that keeps a high value
+  // here from stalling the render loop.
+  float timeScale = 1.0f;
+
+  // glfwSwapInterval(1) vs (0) -- live-toggleable rather than hardcoded so
+  // it can be turned off later if uncapped rendering is ever needed (e.g.
+  // to read true render performance off the FPS overlay instead of the
+  // display's refresh rate). Applied once per frame in main().
+  bool vsyncEnabled = true;
+
   explicit SimControls(float tumbleKickRadSIn) : tumbleKickRadS(tumbleKickRadSIn) {}
 };
 
