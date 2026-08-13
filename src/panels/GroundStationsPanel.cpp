@@ -6,7 +6,7 @@
 namespace
 {
 // HH:MM:SS (UTC), truncating the fractional second -- AOS/LOS timing
-// resolution is already +/- Config::PASS_PREDICTION_STEP_S (a coarser
+// resolution is already +/- VisualizationConfig::PASS_PREDICTION_STEP_S (a coarser
 // figure than sub-second), so displaying fractional seconds would imply
 // more precision than the prediction actually has.
 void formatClockTime(double jd, char *out, size_t outSize)

@@ -40,13 +40,12 @@ void stepOnce(FlightSoftware &fsw)
 struct TestRig
 {
   PhysicsWorld world;
-  HardwareConfig hw;
   Satellite sat;
   FlightSoftware fsw;
 
-  TestRig() : sat(buildSatellite(world, hw)), fsw(sat)
+  TestRig() : sat(buildSatellite(world)), fsw(sat)
   {
-    fsw.configure(hw, glm::quat(1, 0, 0, 0));
+    fsw.configure(sat.hwConfig, glm::quat(1, 0, 0, 0));
   }
 };
 } // namespace

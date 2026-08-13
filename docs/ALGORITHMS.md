@@ -162,7 +162,7 @@ derived quantities below (fed to it by `FlightSoftware::step()`,
 `src/fsw/FlightSoftware.h`/`.cpp`).
 
 **One fixed-rate loop drives `Simulation::step()` and one `FlightSoftware`
-cycle together**, in that order, once per `Config::TIME_STEP_S`
+cycle together**, in that order, once per `SatelliteConfig::TIME_STEP_S`
 (`main()`): `sim.step(dt)` — `world.step(dt)` (propagates the Sun/Earth/
 Moon hierarchy and the spacecraft's orbital-mode state, then integrates
 rotational dynamics against whatever actuator commands
@@ -231,7 +231,7 @@ ECI state, summing a set of pluggable force models each stage
   and `Cr` is the reflectivity coefficient (1.0 = perfect absorber,
   ~2.0 = perfect reflector; defaults to 1.3, typical for a mixed real
   surface). Zeroed during eclipse via the same `EclipseModel` used for EPS
-  generation gating. `A/m` (`Config::SPACECRAFT_CROSS_SECTION_M2` /
+  generation gating. `A/m` (`SatelliteConfig::SPACECRAFT_CROSS_SECTION_M2` /
   `SPACECRAFT_MASS_KG`) uses the mirror's full 18m x 18m face area against
   its 75kg composite mass (see "Spacecraft Structure" above) — at this
   ratio SRP is no longer a minor perturbation (~2.9 mN at 1 AU for a
@@ -289,7 +289,7 @@ Moon via a per-frame `MoonModel::positionEci` cast (`moonPositionNow`,
 held while paused, same pattern as `earthRelativePositionNow`) and
 `OrbitFrames::MOON_RADIUS_M`. True size at true distance for both, the
 same treatment Earth already gets — no angular-diameter-at-a-fixed-
-apparent-size trick. `Config::CAMERA_FAR` (2.0e11 m) is sized to clear
+apparent-size trick. `VisualizationConfig::CAMERA_FAR` (2.0e11 m) is sized to clear
 the real Sun distance with margin — both markers would otherwise be
 silently clipped by the far plane despite their positions being computed
 correctly.
@@ -331,7 +331,7 @@ wrong hemisphere.
 
 Ambient light (`GUI::setAmbientLight`, new in VGL alongside this feature
 — previously a hardcoded `0.15` in the shader, not configurable per
-scene) is set once at startup to `Config::SCENE_AMBIENT_LIGHT` (0.35):
+scene) is set once at startup to `VisualizationConfig::SCENE_AMBIENT_LIGHT` (0.35):
 VGL's original fixed value left Earth's night side reading as near-black,
 harsher than this project's visual goal of a softer still-visible dark
 side — not a claim about real earthshine/city-light brightness, purely a
@@ -389,7 +389,7 @@ ground-footprint circle (main.cpp's `drawGroundTrackMinimap`/
 footprint's coverage half-angle uses the standard elevation-angle
 ground-coverage formula (`rho = pi/2 - minElevation - eta`,
 `sin(eta) = R*cos(minElevation)/r`), with `minElevation =
-Config::FOOTPRINT_MIN_ELEVATION_DEG` (0°, horizon-limited, by default) --
+VisualizationConfig::FOOTPRINT_MIN_ELEVATION_DEG` (0°, horizon-limited, by default) --
 the same threshold ground-station target selection uses (below), so "is
 this station in the footprint circle" and "is this station a valid
 targeting candidate" never disagree.
@@ -423,9 +423,9 @@ vectors, the same as it would from a HIL rig or real hardware):
 `SLEW`/`FINE_POINTING`/`REFLECT` all aim at `adcs.target`, which the
 harness sets every simulated frame to the real ECI position of the
 closest ground station currently _within the satellite's footprint_
-(elevation ≥ `Config::GROUND_STATION_MIN_ELEVATION_DEG`, 10° — a typical
+(elevation ≥ `SatelliteConfig::GROUND_STATION_MIN_ELEVATION_DEG`, 10° — a typical
 real minimum usable elevation, distinct from
-`Config::FOOTPRINT_MIN_ELEVATION_DEG`'s 0°/horizon-limited pure
+`VisualizationConfig::FOOTPRINT_MIN_ELEVATION_DEG`'s 0°/horizon-limited pure
 _geometric coverage_ circle, see its own comment in `Config.h`) — not an
 arbitrary point, and not a fixed one. `GROUND_STATIONS` is a small
 compiled list of major US cities' geodetic lat/lon, standing in for real
@@ -480,14 +480,14 @@ track smoothly, not react to as a discrete retarget each cycle.
 `predictGroundStationPasses`, `GroundStationsPanel.h/.cpp`): the Ground
 Stations tab's contact schedule — a first step toward comms-link
 simulation, per this project's own trajectory (see README.md's Scope
-section). For each of the next `Config::PASS_PREDICTION_LOOKAHEAD_S`
+section). For each of the next `VisualizationConfig::PASS_PREDICTION_LOOKAHEAD_S`
 (24h) of simulated time, a _copy_ of the real orbital state is propagated
-forward in fixed `Config::PASS_PREDICTION_STEP_S` (15s) increments — the
+forward in fixed `VisualizationConfig::PASS_PREDICTION_STEP_S` (15s) increments — the
 same force models as the real propagator and `computePredictedOrbitPath`
 (two-body, J2, drag, SRP, Sun/Moon third-body), for consistency — sampling
 every `GROUND_STATIONS` entry's elevation at each step. A per-station
 state machine detects AOS (elevation crosses above
-`Config::GROUND_STATION_MIN_ELEVATION_DEG`) and LOS (crosses back below),
+`SatelliteConfig::GROUND_STATION_MIN_ELEVATION_DEG`) and LOS (crosses back below),
 tracking the peak elevation reached in between; a pass still open when
 the lookahead window ends is recorded with LOS at the window's own end
 instant, not a fabricated later time. AOS/LOS timing resolution is
@@ -496,7 +496,7 @@ precision for prediction speed) — displayed at whole-second resolution in
 the UI, since implying sub-step precision would overstate what a 15s-step
 search actually resolved.
 
-Refreshed on a **real wall-clock** timer (`Config::PASS_PREDICTION_REFRESH_S`,
+Refreshed on a **real wall-clock** timer (`VisualizationConfig::PASS_PREDICTION_REFRESH_S`,
 30s), not simulated time like `computePredictedOrbitPath`'s own refresh —
 tying a ~5760-step search's cadence to `simDt` would make it run _more_
 often, not less, the faster `SimControls::timeScale` is turned up, the
@@ -846,8 +846,8 @@ manual overrides.
 
 **Deployment** (`Simulation::buildSimulation()`, harness):
 the spacecraft starts with a real nonzero angular velocity — a per-axis
-uniform kick over `[-Config::DEPLOYMENT_TUMBLE_RATE_RAD_S,
-+Config::DEPLOYMENT_TUMBLE_RATE_RAD_S]` (1.6 rad/s), the same shape as
+uniform kick over `[-SatelliteConfig::TUMBLE_KICK_RAD_S,
++SatelliteConfig::TUMBLE_KICK_RAD_S]` (1.6 rad/s), the same shape as
 the manual "Kick into random tumble" button, applied once at startup
 instead of on a button press. `1.6` is chosen so the expected 3-axis
 vector magnitude (`E[|v|] ≈ R` for per-axis `Uniform(-R,R)`) sits above
@@ -969,7 +969,7 @@ follows:
    rate — IMU, magnetometer, and wheel telemetry every cycle (real
    hardware for all three comfortably exceeds this loop's 20 Hz on its
    own); the star tracker, sun sensor, and battery/power telemetry each
-   behind their own timer (`Config::STAR_TRACKER_SAMPLE_PERIOD_S` = 0.2s
+   behind their own timer (`SatelliteConfig::STAR_TRACKER_SAMPLE_PERIOD_S` = 0.2s
    / 5 Hz, an image-processing-based attitude solve; `SUN_SENSOR_SAMPLE_
    PERIOD_S` = 0.1s / 10 Hz, a coarse analog sensor polled over a bus;
    `POWER_SAMPLE_PERIOD_S` = 1.0s / 1 Hz, a typical I2C fuel-gauge IC). A

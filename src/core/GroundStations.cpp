@@ -1,5 +1,5 @@
 #include "GroundStations.h"
-#include "Config.h"
+#include "SatelliteConfig.h"
 #include <rigidbody/orbit/OrbitFrames.h>
 #include <rigidbody/orbit/OrbitTime.h>
 #include <rigidbody/orbit/OrbitForceModel.h>
@@ -52,10 +52,10 @@ std::vector<GroundStationPass> predictGroundStationPasses(const OrbitState &curr
   propagator.addForceModel(std::make_unique<TwoBodyGravity>());
   propagator.addForceModel(std::make_unique<J2Perturbation>());
   propagator.addForceModel(
-      std::make_unique<AtmosphericDrag>(Config::SPACECRAFT_CROSS_SECTION_M2, Config::SPACECRAFT_MASS_KG));
+      std::make_unique<AtmosphericDrag>(SatelliteConfig::SPACECRAFT_CROSS_SECTION_M2, SatelliteConfig::SPACECRAFT_MASS_KG));
   auto sunGravity = std::make_unique<ThirdBodyGravity>(ThirdBodyType::Sun);
   auto moonGravity = std::make_unique<ThirdBodyGravity>(ThirdBodyType::Moon);
-  auto srp = std::make_unique<SolarRadiationPressure>(Config::SPACECRAFT_CROSS_SECTION_M2, Config::SPACECRAFT_MASS_KG);
+  auto srp = std::make_unique<SolarRadiationPressure>(SatelliteConfig::SPACECRAFT_CROSS_SECTION_M2, SatelliteConfig::SPACECRAFT_MASS_KG);
   sunGravity->epochJd = missionEpochJd;
   moonGravity->epochJd = missionEpochJd;
   srp->epochJd = missionEpochJd;

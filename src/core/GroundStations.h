@@ -83,7 +83,7 @@ struct GroundStationPass
 // increments, sampling every station's elevation at each step and
 // detecting AOS/LOS as the elevation crosses minElevationRad. AOS/LOS
 // timing resolution is therefore +/- stepS (a coarser stepS trades timing
-// precision for prediction speed -- see Config::PASS_PREDICTION_STEP_S).
+// precision for prediction speed -- see VisualizationConfig::PASS_PREDICTION_STEP_S).
 // `missionEpochJd` is the Julian Date at currentState.missionTimeS = 0
 // (the same convention computePredictedOrbitPath uses), not the current
 // JD.

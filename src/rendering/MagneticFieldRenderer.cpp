@@ -1,5 +1,5 @@
 #include "MagneticFieldRenderer.h"
-#include "core/Config.h"
+#include "core/VisualizationConfig.h"
 #include <rigidbody/orbit/OrbitFrames.h>
 #include <glm/gtc/constants.hpp>
 #include <cmath>
@@ -10,18 +10,15 @@ void drawMagneticField(GUI &gui, const glm::vec3 &fieldWorldT, glm::vec3 satPos)
   // SATELLITE_VISUAL_SCALE like every other satellite-local dimension so
   // the field arrow stays proportionate to the now-much-bigger satellite
   // instead of shrinking to nothing next to it.
-  constexpr float FIELD_VISUAL_SCALE = 8000.0f;
-  const glm::vec3 fieldColor{0.2f, 0.9f, 0.9f};
-
-  glm::vec3 arrow = fieldWorldT * FIELD_VISUAL_SCALE * Config::SATELLITE_VISUAL_SCALE;
-  gui.drawArrow(satPos, satPos + arrow, fieldColor, 2.0f);
+  glm::vec3 arrow = fieldWorldT * VisualizationConfig::FIELD_VISUAL_SCALE * VisualizationConfig::SATELLITE_VISUAL_SCALE;
+  gui.drawArrow(satPos, satPos + arrow, VisualizationConfig::FIELD_ARROW_COLOR, 2.0f);
 }
 
 std::vector<FieldLine> traceDipoleFieldLines(const CentralBodyMagneticField &magField)
 {
   const float earthR = static_cast<float>(OrbitFrames::EARTH_RADIUS_M);
-  const float stepM = earthR * Config::FIELD_LINE_STEP_FRAC_EARTH_RADIUS;
-  const float maxRadius = earthR * Config::FIELD_LINE_MAX_RADIUS_FRAC_EARTH_RADIUS;
+  const float stepM = earthR * VisualizationConfig::FIELD_LINE_STEP_FRAC_EARTH_RADIUS;
+  const float maxRadius = earthR * VisualizationConfig::FIELD_LINE_MAX_RADIUS_FRAC_EARTH_RADIUS;
   const glm::vec3 axis = glm::normalize(magField.rotationAxisWorld);
   glm::vec3 axisX = (std::abs(axis.x) < 0.9f) ? glm::vec3(1, 0, 0) : glm::vec3(0, 1, 0);
   glm::vec3 basisX = glm::normalize(glm::cross(axisX, axis));
@@ -31,12 +28,12 @@ std::vector<FieldLine> traceDipoleFieldLines(const CentralBodyMagneticField &mag
   for (bool north : {true, false})
   {
     glm::vec3 pole = north ? axis : -axis;
-    for (float colatDeg : Config::FIELD_LINE_COLATITUDES_DEG)
+    for (float colatDeg : VisualizationConfig::FIELD_LINE_COLATITUDES_DEG)
     {
       float colat = glm::radians(colatDeg);
-      for (int ai = 0; ai < Config::FIELD_LINE_AZIMUTH_COUNT; ai++)
+      for (int ai = 0; ai < VisualizationConfig::FIELD_LINE_AZIMUTH_COUNT; ai++)
       {
-        float az = (2.0f * glm::pi<float>() * ai) / Config::FIELD_LINE_AZIMUTH_COUNT;
+        float az = (2.0f * glm::pi<float>() * ai) / VisualizationConfig::FIELD_LINE_AZIMUTH_COUNT;
         glm::vec3 seedDir = std::cos(colat) * pole + std::sin(colat) * (std::cos(az) * basisX + std::sin(az) * basisY);
         glm::vec3 pos = seedDir * (earthR * 1.001f); // just above the surface, avoiding the r<1m undefined-direction case
 
@@ -49,11 +46,11 @@ std::vector<FieldLine> traceDipoleFieldLines(const CentralBodyMagneticField &mag
 
         FieldLine line;
         line.seededNorth = north;
-        line.points.reserve(Config::FIELD_LINE_MAX_POINTS);
+        line.points.reserve(VisualizationConfig::FIELD_LINE_MAX_POINTS);
         line.points.push_back(pos);
 
         auto direction = [&](const glm::vec3 &p) { return sign * glm::normalize(magField.sample(p)); };
-        for (int i = 0; i < Config::FIELD_LINE_MAX_POINTS; i++)
+        for (int i = 0; i < VisualizationConfig::FIELD_LINE_MAX_POINTS; i++)
         {
           glm::vec3 k1 = direction(pos);
           glm::vec3 k2 = direction(pos + 0.5f * stepM * k1);
@@ -77,11 +74,9 @@ std::vector<FieldLine> traceDipoleFieldLines(const CentralBodyMagneticField &mag
 
 void drawMagneticFieldLines(GUI &gui, const std::vector<FieldLine> &lines)
 {
-  const glm::vec3 northColor{0.25f, 0.65f, 0.95f};
-  const glm::vec3 southColor{0.95f, 0.65f, 0.15f};
   for (const FieldLine &line : lines)
   {
-    const glm::vec3 &color = line.seededNorth ? northColor : southColor;
+    const glm::vec3 &color = line.seededNorth ? VisualizationConfig::FIELD_LINE_NORTH_COLOR : VisualizationConfig::FIELD_LINE_SOUTH_COLOR;
     for (size_t i = 0; i + 1 < line.points.size(); i++)
       gui.drawLine(line.points[i], line.points[i + 1], color, 1.0f);
   }

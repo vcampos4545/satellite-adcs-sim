@@ -109,10 +109,6 @@ struct WheelTelemetry
   bool healthy = true;
 };
 
-// EPS (electrical power subsystem) telemetry -- what a real flight computer
-// reads off its battery fuel gauge/charge controller, not something ADCS
-// derives itself. No "valid" flag: unlike the sensors above, this sim
-// doesn't model an EPS telemetry failure mode, so it's always available.
 struct PowerSample
 {
   float batterySoc = 1.0f;      // 0-1, state of charge

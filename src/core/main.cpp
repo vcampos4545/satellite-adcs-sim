@@ -1,6 +1,7 @@
 #include <vgl/vgl.h>
 #include "ImGuiLayer.h"
-#include "Config.h"
+#include "VisualizationConfig.h"
+#include "SatelliteConfig.h"
 #include "Simulation.h"
 #include "fsw/FlightSoftware.h"
 #include <cstdio>
@@ -15,16 +16,16 @@ int main()
   ImGuiLayer imguiLayer(gui);
   gui.camera
       .setUp({0, 0, 1})
-      .setClipPlanes(Config::CAMERA_NEAR, Config::CAMERA_FAR)
-      .setFOV(Config::CAMERA_FOV);
+      .setClipPlanes(VisualizationConfig::CAMERA_NEAR, VisualizationConfig::CAMERA_FAR)
+      .setFOV(VisualizationConfig::CAMERA_FOV);
   // The scene spans a 0.1m Satellite up to a ~6.9e6m orbital radius -- a
   // standard depth buffer can't hold that range without z-fighting.
-  gui.setLogDepth(Config::CAMERA_FAR);
-  gui.setAmbientLight(Config::SCENE_AMBIENT_LIGHT);
+  gui.setLogDepth(VisualizationConfig::CAMERA_FAR);
+  gui.setAmbientLight(VisualizationConfig::SCENE_AMBIENT_LIGHT);
 
   Simulation sim = buildSimulation();
   FlightSoftware fsw(sim.spacecraft);
-  fsw.configure(sim.hwConfig, sim.spacecraft.body->orientation);
+  fsw.configure(sim.spacecraft.hwConfig, sim.spacecraft.body->orientation);
 
   glm::vec2 lastMousePos = gui.getMousePosition();
   int selectedPassIndex = -1; // Ground Stations tab's selected table row -- transient UI state, not simulation state
@@ -45,16 +46,16 @@ int main()
     // Update
     fswTimer += dt * sim.simControls.timeScale;
     // Caps how much backlog one frame will catch up on -- see its own
-    // comment in Config.h. Without this, a high timeScale (or a real
-    // stall) would demand hundreds of catch-up steps in a single frame
-    // and freeze rendering until it worked through them.
-    if (fswTimer > Config::FSW_TIMER_MAX_S)
-      fswTimer = Config::FSW_TIMER_MAX_S;
-    while (fswTimer > Config::TIME_STEP_S)
+    // comment in SatelliteConfig.h. Without this, a high timeScale (or a
+    // real stall) would demand hundreds of catch-up steps in a single
+    // frame and freeze rendering until it worked through them.
+    if (fswTimer > SatelliteConfig::FSW_TIMER_MAX_S)
+      fswTimer = SatelliteConfig::FSW_TIMER_MAX_S;
+    while (fswTimer > SatelliteConfig::TIME_STEP_S)
     {
-      fswTimer -= Config::TIME_STEP_S;
-      sim.step(Config::TIME_STEP_S);
-      fsw.step(Config::TIME_STEP_S, sim.world.orbitalState(sim.spacecraft.body).position,
+      fswTimer -= SatelliteConfig::TIME_STEP_S;
+      sim.step(SatelliteConfig::TIME_STEP_S);
+      fsw.step(SatelliteConfig::TIME_STEP_S, sim.world.orbitalState(sim.spacecraft.body).position,
                sim.currentJdNow, sim.sunPositionNow, sim.fieldNow, sim.inEclipse);
       sim.updateTelemetry(fsw);
     }

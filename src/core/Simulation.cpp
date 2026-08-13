@@ -1,6 +1,8 @@
 #include "Simulation.h"
 #include "fsw/FlightSoftware.h"
-#include "Config.h"
+#include "VisualizationConfig.h"
+#include "SatelliteConfig.h"
+#include "PhysicalConstants.h"
 #include "rendering/SatelliteRenderer.h"
 #include "rendering/OrbitRenderer.h"
 #include "rendering/WorldAxesGizmo.h"
@@ -17,7 +19,7 @@
 
 Simulation::Simulation()
     : camera(1.0f, 0.0f, 0.0f, glm::vec3(0.0f)), // reassigned to real values in buildSimulation()
-      telemetry(Config::TELEMETRY_HISTORY_SAMPLES), simControls(Config::TUMBLE_KICK_RAD_S)
+      telemetry(VisualizationConfig::TELEMETRY_HISTORY_SAMPLES), simControls(SatelliteConfig::TUMBLE_KICK_RAD_S)
 {
 }
 
@@ -25,20 +27,20 @@ Simulation buildSimulation()
 {
   Simulation sim;
 
-  sim.spacecraft = buildSatellite(sim.world, sim.hwConfig);
+  sim.spacecraft = buildSatellite(sim.world);
 
   sim.earthTexture.loadFromFile(std::string(RESOURCES_DIR) + "/textures/earth.jpg");
   sim.sunTexture.loadFromFile(std::string(RESOURCES_DIR) + "/textures/sun.jpg");
   sim.moonTexture.loadFromFile(std::string(RESOURCES_DIR) + "/textures/moon.jpg");
 
-  sim.camera = OrbitalCamera(Config::CAMERA_INITIAL_DISTANCE, 45.0f, 0.0f, sim.spacecraft.body->position);
-  sim.camera.setMaxDistance(Config::CAMERA_MAX_DISTANCE)
-      .setMinDistance(Config::CAMERA_MIN_DISTANCE)
-      .setZoomSensitivity(Config::ZOOM_SENSITIVITY)
-      .setPanSensitivity(Config::PAN_SENSITIVITY);
+  sim.camera = OrbitalCamera(VisualizationConfig::CAMERA_INITIAL_DISTANCE, 45.0f, 0.0f, sim.spacecraft.body->position);
+  sim.camera.setMaxDistance(VisualizationConfig::CAMERA_MAX_DISTANCE)
+      .setMinDistance(VisualizationConfig::CAMERA_MIN_DISTANCE)
+      .setZoomSensitivity(VisualizationConfig::ZOOM_SENSITIVITY)
+      .setPanSensitivity(VisualizationConfig::PAN_SENSITIVITY);
 
   CelestialBodyParams sunParams;
-  sunParams.mu = Config::GM_SUN;
+  sunParams.mu = PhysicalConstants::GM_SUN;
   sim.sunBody = sim.celestialSystem.addBody("Sun", sunParams);
   sim.celestialSystem.starBody = sim.sunBody;
 
@@ -52,7 +54,7 @@ Simulation buildSimulation()
   { return -SunModel::positionEci(jd); };
 
   CelestialBodyParams moonParams;
-  moonParams.mu = Config::GM_MOON;
+  moonParams.mu = PhysicalConstants::GM_MOON;
   sim.moonBody = sim.celestialSystem.addBody("Moon", moonParams, sim.earthBody);
   sim.moonBody->analyticPositionFn = [](double jd)
   { return MoonModel::positionEci(jd); };
@@ -69,11 +71,11 @@ Simulation buildSimulation()
   OrbitState initialState = elements.toState(earthParams.mu);
   sim.world.setOrbitalMode(sim.spacecraft.body, sim.earthBody, {sim.sunBody, sim.moonBody}, initialState);
 
-  sim.orbitPathPoints = computePredictedOrbitPath(sim.world.orbitalState(sim.spacecraft.body), Config::ORBIT_PATH_POINTS, sim.missionEpochJd);
+  sim.orbitPathPoints = computePredictedOrbitPath(sim.world.orbitalState(sim.spacecraft.body), VisualizationConfig::ORBIT_PATH_POINTS, sim.missionEpochJd);
   sim.groundStationPasses = predictGroundStationPasses(
       sim.world.orbitalState(sim.spacecraft.body), sim.missionEpochJd,
-      glm::radians(static_cast<double>(Config::GROUND_STATION_MIN_ELEVATION_DEG)),
-      Config::PASS_PREDICTION_LOOKAHEAD_S, Config::PASS_PREDICTION_STEP_S);
+      glm::radians(static_cast<double>(SatelliteConfig::GROUND_STATION_MIN_ELEVATION_DEG)),
+      VisualizationConfig::PASS_PREDICTION_LOOKAHEAD_S, VisualizationConfig::PASS_PREDICTION_STEP_S);
 
   sim.magneticFieldLines = traceDipoleFieldLines(sim.fieldLineModel);
 
@@ -111,18 +113,18 @@ void Simulation::step(float dt)
   moonPositionNow = glm::vec3(celestialSystem.absolutePosition(moonBody, currentJdNow) - earthAbsPos);
 
   orbitPathRefreshTimer += dt;
-  if (orbitPathRefreshTimer > Config::ORBIT_PATH_REFRESH_S)
+  if (orbitPathRefreshTimer > VisualizationConfig::ORBIT_PATH_REFRESH_S)
   {
-    orbitPathPoints = computePredictedOrbitPath(orbitState, Config::ORBIT_PATH_POINTS, missionEpochJd);
+    orbitPathPoints = computePredictedOrbitPath(orbitState, VisualizationConfig::ORBIT_PATH_POINTS, missionEpochJd);
     orbitPathRefreshTimer = 0.0f;
   }
 
   groundTrackSampleTimer += dt;
-  if (groundTrackSampleTimer > Config::GROUND_TRACK_SAMPLE_INTERVAL_S)
+  if (groundTrackSampleTimer > VisualizationConfig::GROUND_TRACK_SAMPLE_INTERVAL_S)
   {
     OrbitFrames::Geodetic geo = OrbitFrames::eciToGeodeticDeg(orbitState.position, OrbitFrames::gmstRad(currentJdNow));
     groundTrackLatLonDeg.push_back(glm::vec2(static_cast<float>(geo.latDeg), static_cast<float>(geo.lonDeg)));
-    if (static_cast<int>(groundTrackLatLonDeg.size()) > Config::GROUND_TRACK_MAX_POINTS)
+    if (static_cast<int>(groundTrackLatLonDeg.size()) > VisualizationConfig::GROUND_TRACK_MAX_POINTS)
       groundTrackLatLonDeg.erase(groundTrackLatLonDeg.begin());
     groundTrackSampleTimer = 0.0f;
   }
@@ -143,12 +145,12 @@ void Simulation::updateTelemetry(const FlightSoftware &fsw)
 void Simulation::refreshGroundStationPasses(float realDt)
 {
   groundStationPassRefreshTimer += realDt;
-  if (groundStationPassRefreshTimer > Config::PASS_PREDICTION_REFRESH_S)
+  if (groundStationPassRefreshTimer > VisualizationConfig::PASS_PREDICTION_REFRESH_S)
   {
     groundStationPasses = predictGroundStationPasses(
         world.orbitalState(spacecraft.body), missionEpochJd,
-        glm::radians(static_cast<double>(Config::GROUND_STATION_MIN_ELEVATION_DEG)),
-        Config::PASS_PREDICTION_LOOKAHEAD_S, Config::PASS_PREDICTION_STEP_S);
+        glm::radians(static_cast<double>(SatelliteConfig::GROUND_STATION_MIN_ELEVATION_DEG)),
+        VisualizationConfig::PASS_PREDICTION_LOOKAHEAD_S, VisualizationConfig::PASS_PREDICTION_STEP_S);
     groundStationPassRefreshTimer = 0.0f;
   }
 }
@@ -191,7 +193,7 @@ void Simulation::draw(GUI &gui, FlightSoftware &fsw, int &selectedPassIndex)
   if (vis.showOrbitPath)
     drawOrbitPath(gui, orbitPathPoints);
   if (vis.showGroundFootprint)
-    drawGroundFootprint(gui, world.orbitalState(spacecraft.body).position, glm::radians(Config::FOOTPRINT_MIN_ELEVATION_DEG));
+    drawGroundFootprint(gui, world.orbitalState(spacecraft.body).position, glm::radians(VisualizationConfig::FOOTPRINT_MIN_ELEVATION_DEG));
   if (vis.showGroundStations)
     drawGroundStations(gui, OrbitFrames::gmstRad(currentJdNow));
   if (vis.showSolarFarms)
@@ -214,7 +216,7 @@ void Simulation::draw(GUI &gui, FlightSoftware &fsw, int &selectedPassIndex)
 
   if (vis.showTargetMarker)
   {
-    gui.drawSphere(adcs.target, Config::TARGET_MARKER_RADIUS_M, {0, 1.0f, 0});
+    gui.drawSphere(adcs.target, VisualizationConfig::TARGET_MARKER_RADIUS_M, {0, 1.0f, 0});
     gui.drawLine(spacecraft.body->position, adcs.target, {0, 1.0f, 0});
   }
 

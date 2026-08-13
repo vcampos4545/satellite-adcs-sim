@@ -1,5 +1,5 @@
 #include "OrbitPanel.h"
-#include "core/Config.h"
+#include "core/VisualizationConfig.h"
 #include "rendering/OrbitRenderer.h"
 #include <rigidbody/orbit/OrbitalElements.h>
 #include <rigidbody/orbit/OrbitForceModel.h>
@@ -37,5 +37,5 @@ void drawOrbitTab(const OrbitState &orbitState, const Texture &earthTexture,
   ImGui::SeparatorText("Ground Track");
   double gmst = OrbitFrames::gmstRad(currentJd);
   drawGroundTrackMinimap(earthTexture, groundTrack, orbitState.position, gmst,
-                         glm::radians(static_cast<double>(Config::FOOTPRINT_MIN_ELEVATION_DEG)));
+                         glm::radians(static_cast<double>(VisualizationConfig::FOOTPRINT_MIN_ELEVATION_DEG)));
 }

@@ -1,5 +1,5 @@
 #include "EpsPanel.h"
-#include "core/Config.h"
+#include "core/PhysicalConstants.h"
 #include <imgui.h>
 
 void drawEpsTab(Satellite &sat, ADCS &adcs, SensorTelemetry &telemetry, bool inEclipse)
@@ -33,7 +33,7 @@ void drawEpsTab(Satellite &sat, ADCS &adcs, SensorTelemetry &telemetry, bool inE
   static const char *panelNames[6] = {"+X", "-X", "+Y", "-Y", "+Z", "-Z"};
   for (size_t i = 0; i < sat.solarPanels.size(); i++)
   {
-    SolarPanel::Reading r = sat.solarPanels[i].sample(*sat.body, sunDirWorld, Config::SOLAR_FLUX_WM2);
+    SolarPanel::Reading r = sat.solarPanels[i].sample(*sat.body, sunDirWorld, PhysicalConstants::SOLAR_FLUX_WM2);
     float panelPowerW = inEclipse ? 0.0f : r.powerW;
     totalGenW += panelPowerW;
     const char *name = i < 6 ? panelNames[i] : "?";

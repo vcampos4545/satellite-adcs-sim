@@ -9,9 +9,9 @@ void drawSimulationTab(SimControls &sim, EpochControls &epoch,
 {
   ImGui::SeparatorText("Time Controls");
   ImGui::TextDisabled("Scales real elapsed time before it reaches the fixed-rate FSW/physics loop --");
-  ImGui::TextDisabled("each step is still exactly Config::TIME_STEP_S; this just changes how many");
+  ImGui::TextDisabled("each step is still exactly SatelliteConfig::TIME_STEP_S; this just changes how many");
   ImGui::TextDisabled("happen per real second. Falls behind smoothly (not a freeze) if a value here");
-  ImGui::TextDisabled("would need more steps per frame than Config::FSW_TIMER_MAX_S allows.");
+  ImGui::TextDisabled("would need more steps per frame than SatelliteConfig::FSW_TIMER_MAX_S allows.");
   ImGui::SliderFloat("Time Scale", &sim.timeScale, 0.0f, 500.0f, "%.1fx");
   if (ImGui::Button("Pause"))
     sim.timeScale = 0.0f;

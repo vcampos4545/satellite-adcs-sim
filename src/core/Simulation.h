@@ -25,8 +25,7 @@ class Simulation
 {
 public:
   PhysicsWorld world;
-  Satellite spacecraft;
-  HardwareConfig hwConfig;
+  Satellite spacecraft; // owns its own hwConfig -- see Satellite.h's own comment
 
   // ECI system
   CelestialSystem celestialSystem;

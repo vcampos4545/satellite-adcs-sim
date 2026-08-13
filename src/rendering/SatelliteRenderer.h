@@ -10,7 +10,7 @@
 // mirror plate), reaction wheels, magnetorquers, the (non-physical,
 // visualization-only) bus box, and the sun-reflection geometry --
 // everything drawn relative to the satellite's own body frame and scaled
-// by Config::SATELLITE_VISUAL_SCALE. See MagneticFieldRenderer.h/
+// by VisualizationConfig::SATELLITE_VISUAL_SCALE. See MagneticFieldRenderer.h/
 // OrbitRenderer.h for the global (Earth-scale) visualizations.
 // ---------------------------------------------------------------------------
 
@@ -33,7 +33,7 @@ void drawMagnetorquers(GUI &gui, const std::vector<Magnetorquer *> &magnetorquer
 
 // A small decorative box mounted just behind the body's -Z face,
 // representing the bus core at the center of the real 18m x 18m mirror
-// plate `sat` itself now is -- see Config::BUS_SIZE. Not a physics body,
+// plate `sat` itself now is -- see VisualizationConfig::BUS_SIZE. Not a physics body,
 // purely visual (the composite mirror+bus mass/inertia is already baked
 // into `sat` by buildSatellitePyramid()).
 void drawBus(GUI &gui, RigidBody *sat);

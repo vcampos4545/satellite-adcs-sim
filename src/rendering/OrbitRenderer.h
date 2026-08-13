@@ -77,7 +77,7 @@ void drawEarth(GUI &gui, const Texture &earthTexture, double currentJd);
 // ECI-meter points (world origin = Earth's center, matching
 // PhysicsWorld's own frame here), ready to draw directly. Recomputed
 // periodically (not every frame) by the caller -- see
-// Config::ORBIT_PATH_REFRESH_S -- since nothing here is cheap enough to
+// VisualizationConfig::ORBIT_PATH_REFRESH_S -- since nothing here is cheap enough to
 // be worth redoing 60 times a second for a path that only drifts slowly
 // (mainly from J2) cycle to cycle.
 std::vector<glm::vec3> computePredictedOrbitPath(const OrbitState &current, int numPoints, double epochJd);

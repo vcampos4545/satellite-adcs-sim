@@ -1,7 +1,7 @@
 #include "FlightSoftware.h"
 #include "core/Satellite.h"
 #include "core/GroundStations.h"
-#include "core/Config.h"
+#include "core/SatelliteConfig.h"
 #include <rigidbody/orbit/OrbitFrames.h>
 #include <rigidbody/sensors/IMU.h>
 #include <rigidbody/sensors/Magnetometer.h>
@@ -24,20 +24,10 @@ void FlightSoftware::step(float dt, const glm::dvec3 &satEciPosition, double cur
                           const glm::vec3 &sunPositionWorld, const glm::vec3 &ambientFieldWorld,
                           bool inEclipse)
 {
-  // Ground-station target selection: recomputed every FSW cycle (cheap --
-  // 6 stations, a distance/elevation compare each), so adcs.target keeps
-  // tracking the selected station's real rotating ECI position even
-  // between actual handoffs. A station must be within the satellite's
-  // footprint to be a viable target at all -- selectClosestGroundStation
-  // returns nullptr rather than falling back to an out-of-view station, in
-  // which case adcs.targetValid goes false and ADCS's own guidance falls
-  // back to sun-relative pointing (see ADCS.h's targetValid comment).
-  // Only an actual change of *what's* selected clears controller integral
-  // windup, not every frame the target's rotating position moves.
   glm::dvec3 targetEci;
   const GroundStation *chosenGroundStation = selectClosestGroundStation(
       satEciPosition, OrbitFrames::gmstRad(currentJdNow),
-      glm::radians(static_cast<double>(Config::GROUND_STATION_MIN_ELEVATION_DEG)), targetEci);
+      glm::radians(static_cast<double>(SatelliteConfig::GROUND_STATION_MIN_ELEVATION_DEG)), targetEci);
   adcs.targetValid = (chosenGroundStation != nullptr);
   if (chosenGroundStation)
     adcs.target = glm::vec3(targetEci);
@@ -77,7 +67,7 @@ void FlightSoftware::step(float dt, const glm::dvec3 &satEciPosition, double cur
   // FlightSoftware.h's own header comment).
   StarTrackerSample star;
   starTrackerTimer_ += dt;
-  if (starTrackerTimer_ > Config::STAR_TRACKER_SAMPLE_PERIOD_S)
+  if (starTrackerTimer_ > SatelliteConfig::STAR_TRACKER_SAMPLE_PERIOD_S)
   {
     starTrackerTimer_ = 0.0f;
     StarTracker::Reading r = spacecraft_.starTracker.sample(*spacecraft_.body, spacecraft_.sunDirWorld);
@@ -90,7 +80,7 @@ void FlightSoftware::step(float dt, const glm::dvec3 &satEciPosition, double cur
   // vector, and the sun's apparent direction barely moves over one sample
   // period -- so the last sample simply persists until the next one.
   sunSensorTimer_ += dt;
-  if (sunSensorTimer_ > Config::SUN_SENSOR_SAMPLE_PERIOD_S)
+  if (sunSensorTimer_ > SatelliteConfig::SUN_SENSOR_SAMPLE_PERIOD_S)
   {
     sunSensorTimer_ = 0.0f;
     SunSensor::Reading r = spacecraft_.sunSensor.sample(*spacecraft_.body, spacecraft_.sunDirWorld);
@@ -109,7 +99,7 @@ void FlightSoftware::step(float dt, const glm::dvec3 &satEciPosition, double cur
   // Battery/power telemetry: a fuel-gauge IC's own slow polling rate,
   // reused between samples the same way as the sun sensor above.
   powerTimer_ += dt;
-  if (powerTimer_ > Config::POWER_SAMPLE_PERIOD_S)
+  if (powerTimer_ > SatelliteConfig::POWER_SAMPLE_PERIOD_S)
   {
     powerTimer_ = 0.0f;
     lastPower_ = {spacecraft_.battery.stateOfCharge(), spacecraft_.battery.voltage()};

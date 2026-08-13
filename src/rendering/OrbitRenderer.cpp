@@ -1,5 +1,6 @@
 #include "OrbitRenderer.h"
-#include "core/Config.h"
+#include "core/VisualizationConfig.h"
+#include "core/SatelliteConfig.h"
 #include <rigidbody/orbit/OrbitalElements.h>
 #include <rigidbody/orbit/OrbitForceModel.h>
 #include <rigidbody/orbit/OrbitPropagator.h>
@@ -53,10 +54,10 @@ std::vector<glm::vec3> computePredictedOrbitPath(const OrbitState &current, int 
   pathPropagator.addForceModel(std::make_unique<TwoBodyGravity>());
   pathPropagator.addForceModel(std::make_unique<J2Perturbation>());
   pathPropagator.addForceModel(
-      std::make_unique<AtmosphericDrag>(Config::SPACECRAFT_CROSS_SECTION_M2, Config::SPACECRAFT_MASS_KG));
+      std::make_unique<AtmosphericDrag>(SatelliteConfig::SPACECRAFT_CROSS_SECTION_M2, SatelliteConfig::SPACECRAFT_MASS_KG));
   auto sunGravity = std::make_unique<ThirdBodyGravity>(ThirdBodyType::Sun);
   auto moonGravity = std::make_unique<ThirdBodyGravity>(ThirdBodyType::Moon);
-  auto srp = std::make_unique<SolarRadiationPressure>(Config::SPACECRAFT_CROSS_SECTION_M2, Config::SPACECRAFT_MASS_KG);
+  auto srp = std::make_unique<SolarRadiationPressure>(SatelliteConfig::SPACECRAFT_CROSS_SECTION_M2, SatelliteConfig::SPACECRAFT_MASS_KG);
   sunGravity->epochJd = epochJd;
   moonGravity->epochJd = epochJd;
   srp->epochJd = epochJd;
@@ -80,9 +81,8 @@ std::vector<glm::vec3> computePredictedOrbitPath(const OrbitState &current, int 
 
 void drawOrbitPath(GUI &gui, const std::vector<glm::vec3> &pathPoints)
 {
-  const glm::vec3 pathColor{0.3f, 0.7f, 1.0f};
   for (size_t i = 0; i + 1 < pathPoints.size(); i++)
-    gui.drawLine(pathPoints[i], pathPoints[i + 1], pathColor, 1.5f);
+    gui.drawLine(pathPoints[i], pathPoints[i + 1], VisualizationConfig::ORBIT_PATH_COLOR, 1.5f);
 }
 
 double computeFootprintHalfAngleRad(const glm::dvec3 &satPosEci, double minElevationRad)
@@ -109,9 +109,9 @@ void drawGroundFootprint(GUI &gui, const glm::dvec3 &satPosEci, double minElevat
   glm::vec3 t1 = glm::normalize(glm::cross(sub, ref));
   glm::vec3 t2 = glm::cross(sub, t1); // already unit (sub, t1 orthonormal)
 
-  const int segments = 96;
+  const int segments = VisualizationConfig::FOOTPRINT_CIRCLE_SEGMENTS;
   const float surfaceOffset = static_cast<float>(OrbitFrames::EARTH_RADIUS_M) * 1.001f; // just above the surface, avoids z-fighting
-  const glm::vec3 footprintColor{0.0f, 0.85f, 1.0f};
+  const glm::vec3 &footprintColor = VisualizationConfig::FOOTPRINT_COLOR;
 
   glm::vec3 prev{0.0f};
   for (int i = 0; i <= segments; i++)
@@ -127,7 +127,7 @@ void drawGroundFootprint(GUI &gui, const glm::dvec3 &satPosEci, double minElevat
   // Dashed nadir line, surface straight up to the satellite.
   glm::vec3 surfacePt = sub * surfaceOffset;
   glm::vec3 satPt = glm::vec3(satPosEci);
-  const int dashSegments = 20;
+  const int dashSegments = VisualizationConfig::FOOTPRINT_NADIR_DASH_SEGMENTS;
   for (int i = 0; i < dashSegments; i += 2) // skip every other -- dashed look
   {
     glm::vec3 a = glm::mix(surfacePt, satPt, static_cast<float>(i) / dashSegments);
@@ -138,25 +138,19 @@ void drawGroundFootprint(GUI &gui, const glm::dvec3 &satPosEci, double minElevat
 
 void drawGroundStations(GUI &gui, double thetaGstRad)
 {
-  constexpr float markerRadiusM = 3.5e4f; // smaller than TARGET_MARKER_RADIUS_M so the selected/green one still reads as primary
-  const glm::vec3 stationColor{0.85f, 0.85f, 0.9f};
-
   for (const GroundStation &station : GROUND_STATIONS)
   {
     glm::vec3 posEci = glm::vec3(groundStationPositionEci(station, thetaGstRad));
-    gui.drawSphere(posEci, markerRadiusM, stationColor);
+    gui.drawSphere(posEci, VisualizationConfig::GROUND_MARKER_RADIUS_M, VisualizationConfig::GROUND_STATION_COLOR);
   }
 }
 
 void drawSolarFarms(GUI &gui, double thetaGstRad)
 {
-  constexpr float markerRadiusM = 3.5e4f; // same size as ground-station markers
-  const glm::vec3 farmColor{0.95f, 0.75f, 0.15f}; // gold, distinct from ground stations' gray
-
   for (const SolarFarm &farm : SOLAR_FARMS)
   {
     glm::vec3 posEci = glm::vec3(solarFarmPositionEci(farm, thetaGstRad));
-    gui.drawSphere(posEci, markerRadiusM, farmColor);
+    gui.drawSphere(posEci, VisualizationConfig::GROUND_MARKER_RADIUS_M, VisualizationConfig::SOLAR_FARM_COLOR);
   }
 }
 

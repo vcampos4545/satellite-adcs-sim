@@ -1,4 +1,5 @@
 #include "WorldAxesGizmo.h"
+#include "core/VisualizationConfig.h"
 #include <imgui.h>
 #include <cmath>
 
@@ -7,8 +8,8 @@ void drawWorldAxesGizmo(GUI &gui)
   const ImGuiIO &io = ImGui::GetIO();
   ImDrawList *dl = ImGui::GetForegroundDrawList();
 
-  const float margin = 80.0f;                             // pixels from the corner
-  const float arm = 50.0f;                                // pixel length of each fully-foreshortened axis
+  const float margin = VisualizationConfig::AXES_GIZMO_MARGIN_PX;
+  const float arm = VisualizationConfig::AXES_GIZMO_ARM_PX;
   const ImVec2 origin(margin, io.DisplaySize.y - margin); // bottom-left corner
 
   dl->AddCircleFilled(origin, arm * 0.65f, IM_COL32(0, 0, 0, 120), 32);
