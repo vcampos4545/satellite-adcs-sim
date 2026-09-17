@@ -6,9 +6,9 @@
 #include "rendering/SatelliteRenderer.h"
 #include "rendering/OrbitRenderer.h"
 #include "rendering/WorldAxesGizmo.h"
-#include "panels/GroundStationsPanel.h"
-#include "panels/ADCSPanel.h"
-#include "panels/FpsOverlay.h"
+#include "rendering/gui/GroundStationsPanel.h"
+#include "rendering/gui/ADCSPanel.h"
+#include "rendering/gui/FpsOverlay.h"
 #include <rigidbody/orbit/SunModel.h>
 #include <rigidbody/orbit/MoonModel.h>
 #include <rigidbody/orbit/OrbitFrames.h>

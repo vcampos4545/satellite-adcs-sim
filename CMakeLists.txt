@@ -121,21 +121,22 @@ add_executable(main
   src/rendering/MagneticFieldRenderer.cpp
   src/rendering/OrbitRenderer.cpp
   src/rendering/WorldAxesGizmo.cpp
-  src/panels/FswPanel.cpp
-  src/panels/SensorsPanel.cpp
-  src/panels/ActuatorsPanel.cpp
-  src/panels/FdirPanel.cpp
-  src/panels/EpsPanel.cpp
-  src/panels/OrbitPanel.cpp
-  src/panels/GroundStationsPanel.cpp
-  src/panels/SimulationPanel.cpp
-  src/panels/VisualizationPanel.cpp
-  src/panels/ADCSPanel.cpp
-  src/panels/FpsOverlay.cpp
+  src/rendering/gui/FswPanel.cpp
+  src/rendering/gui/SensorsPanel.cpp
+  src/rendering/gui/ActuatorsPanel.cpp
+  src/rendering/gui/FdirPanel.cpp
+  src/rendering/gui/EpsPanel.cpp
+  src/rendering/gui/OrbitPanel.cpp
+  src/rendering/gui/GroundStationsPanel.cpp
+  src/rendering/gui/SimulationPanel.cpp
+  src/rendering/gui/VisualizationPanel.cpp
+  src/rendering/gui/ADCSPanel.cpp
+  src/rendering/gui/FpsOverlay.cpp
 )
 # PRIVATE src (the root, not a specific subfolder) -- executable-only code
-# reaches across the core/fsw/rendering/panels split via folder-qualified
-# includes (e.g. "fsw/ADCS.h", "rendering/OrbitRenderer.h"), unlike fsw's
+# reaches across the core/fsw/rendering split (rendering/gui/ for the ImGui
+# panels) via folder-qualified includes (e.g. "fsw/ADCS.h",
+# "rendering/OrbitRenderer.h", "rendering/gui/OrbitPanel.h"), unlike fsw's
 # own narrower PUBLIC include dir above.
 target_include_directories(main PRIVATE src)
 target_link_libraries(main PRIVATE fsw rigidbody vgl imgui)

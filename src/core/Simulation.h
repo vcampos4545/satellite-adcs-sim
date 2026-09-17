@@ -6,8 +6,8 @@
 #include "Satellite.h"
 #include "SensorTelemetry.h"
 #include "GroundStations.h"
-#include "panels/VisualizationPanel.h"
-#include "panels/SimulationPanel.h"
+#include "rendering/gui/VisualizationPanel.h"
+#include "rendering/gui/SimulationPanel.h"
 #include "rendering/MagneticFieldRenderer.h"
 #include <vector>
 
