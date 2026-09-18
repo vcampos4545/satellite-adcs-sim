@@ -29,6 +29,7 @@ Satellite buildSatellite(PhysicsWorld &world)
 {
   using namespace SatelliteConfig;
 
+  // Rigid Body
   Satellite sat;
   sat.body = world.createBody(
       RigidBodyShape::BOX,
@@ -37,14 +38,24 @@ Satellite buildSatellite(PhysicsWorld &world)
 
   sat.body->setMass(TOTAL_MASS_KG);
   sat.body->setInertiaTensor(computeCompositeInertiaTensor());
-
   // TODO: Get rid of this, modify in rigid body sim
   sat.body->groundCollisionEnabled = false;
+
+  // Sensors
 
   // IMU board mounted in a corner of the bus, not at the center of mass --
   // like a real PCB, so its accelerometer isn't trivially always-zero (it
   // picks up centripetal/tangential terms from body rotation).
   sat.imu = IMU(IMU_MOUNT_POS);
+
+  // Magnetometer mounted off-center like the IMU, opposite corner -- real
+  // ADCS boards keep the magnetometer away from the torque rods/wheels
+  // where practical, since their fields would otherwise swamp the sensor.
+  // This model doesn't simulate that interference, but the placement still
+  // reflects real layout practice.
+  sat.magnetometer = Magnetometer(MAGNETOMETER_MOUNT_POS);
+
+  // Actuators
 
   // Pyramid layout: 4 wheels, each spin axis tilted `skew` from body +Z,
   // spaced 90 degrees apart in azimuth. Mounted in a small cluster near the
@@ -90,13 +101,6 @@ Satellite buildSatellite(PhysicsWorld &world)
     sat.hwConfig.torquers[i] = {torquerAxes[i], TORQUER_MAX_MOMENT_AM2};
     sat.body->addForceGenerator(std::move(rod));
   }
-
-  // Magnetometer mounted off-center like the IMU, opposite corner -- real
-  // ADCS boards keep the magnetometer away from the torque rods/wheels
-  // where practical, since their fields would otherwise swamp the sensor.
-  // This model doesn't simulate that interference, but the placement still
-  // reflects real layout practice.
-  sat.magnetometer = Magnetometer(MAGNETOMETER_MOUNT_POS);
 
   // Star tracker boresight along body -Z (StarTracker's own default) --
   // opposite the +Z payload/pointing axis every guidance mode here aims,

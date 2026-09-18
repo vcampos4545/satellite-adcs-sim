@@ -65,9 +65,12 @@ Simulation buildSimulation()
 
   sim.world.attachCelestialSystem(&sim.celestialSystem, sim.missionEpochJd);
 
-  // ISS-like default orbit (500km circular, 51.6deg inclination), perturbed
-  // by the Sun and Moon.
-  OrbitalElements elements = OrbitalElements::circular(500e3, glm::radians(51.6), OrbitFrames::EARTH_RADIUS_M);
+  // Default orbit matches Reflect Orbital's Eärendil-1 demonstrator: ~625km
+  // circular, 88deg near-polar inclination (public reporting via FCC
+  // filings/Aerospace America; one source cites an initial ~510km
+  // insertion orbit raised to ~625km, not modeled here). Perturbed by the
+  // Sun and Moon.
+  OrbitalElements elements = OrbitalElements::circular(625e3, glm::radians(88.0), OrbitFrames::EARTH_RADIUS_M);
   OrbitState initialState = elements.toState(earthParams.mu);
   sim.world.setOrbitalMode(sim.spacecraft.body, sim.earthBody, {sim.sunBody, sim.moonBody}, initialState);
 

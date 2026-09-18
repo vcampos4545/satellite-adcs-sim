@@ -10,38 +10,55 @@
 // spacecraft).
 namespace SatelliteConfig
 {
-  // What AtmosphericDrag/SolarRadiationPressure (predicted orbit path,
-  // ground-station pass prediction) model this spacecraft as -- a
-  // simplified mass/cross-section pair rather than the full mirror+bus
-  // breakdown above, since neither force model needs more than that.
-  constexpr double SPACECRAFT_MASS_KG = 75.0;
-  constexpr double SPACECRAFT_CROSS_SECTION_M2 = 18.0 * 18.0; // mirror's full face area
-
   // ---------------------------------------------------------------------
   // Structure: an 18m x 18m deployable mirror (the RigidBody itself) plus
   // a small bus core -- see docs/ALGORITHMS.md's "Spacecraft Structure"
   // section for the composite inertia tensor buildSatellite() derives
-  // from these.
+  // from these. Sized after Reflect Orbital's Eärendil-1 demonstrator
+  // (18x18m aluminized-Mylar mirror, ~16kg membrane, ~134-142kg total
+  // liftoff mass per public reporting -- FCC filings via Aerospace
+  // America, satnews.com/orbitalsolar.ai coverage). This is loose
+  // inspiration, not a literal reproduction: the bus mass breakdown below
+  // isn't independently published, so BUS_MASS_KG is backed out to hit
+  // the ~142kg total rather than sourced on its own.
   // ---------------------------------------------------------------------
   constexpr float MIRROR_SPAN_M = 18.0f;
   constexpr float MIRROR_THICKNESS_M = 0.005f;
-  constexpr float MIRROR_MASS_KG = 35.0f; // rounded up from an areal-density estimate for structure margin
+  constexpr float MIRROR_MASS_KG = 16.0f; // matches the published Eärendil-1 membrane mass
   constexpr float BUS_CORE_SIDE_M = 0.5f;
-  constexpr float BUS_MASS_KG = 40.0f;
+  constexpr float BUS_MASS_KG = 126.0f;   // backed out to hit the ~142kg published total; not independently sourced
   constexpr float TOTAL_MASS_KG = MIRROR_MASS_KG + BUS_MASS_KG;
+
+  // What AtmosphericDrag/SolarRadiationPressure (predicted orbit path,
+  // ground-station pass prediction) model this spacecraft as -- a
+  // simplified mass/cross-section pair rather than the full mirror+bus
+  // breakdown above, since neither force model needs more than that.
+  constexpr double SPACECRAFT_MASS_KG = TOTAL_MASS_KG;
+  constexpr double SPACECRAFT_CROSS_SECTION_M2 = MIRROR_SPAN_M * MIRROR_SPAN_M; // mirror's full face area
 
   // ---------------------------------------------------------------------
   // Reaction wheel pyramid: 4 wheels, spin axes tilted WHEEL_PYRAMID_SKEW_DEG
   // from body +Z, spaced 90 deg apart in azimuth, mounted near the +Z face
   // -- see buildSatellite()'s own comment for why (matches how a real RWA
-  // pyramid bracket is bolted to one panel).
+  // pyramid bracket is bolted to one panel). Torque/inertia bumped up from
+  // a typical ~75kg-class wheel to represent Eärendil-1's reported
+  // "massively oversized" reaction wheels -- per the company's FCC
+  // filings (via Aerospace America), sized like a wheel for a 650kg-class
+  // bus despite the spacecraft's much lower actual mass, for fast
+  // retargeting authority on a huge, low-inertia membrane. Reflect Orbital
+  // hasn't published exact torque/momentum numbers, so these values are an
+  // engineering estimate (~12 Nms momentum at max speed) scaled from
+  // general reaction-wheel sizing surveys for that mass class, not a
+  // sourced spec. We kept the 4-wheel pyramid (vs. the 3 wheels their FCC
+  // filing reports) to preserve this project's wheel-loss FDIR
+  // demonstration, which depends on the redundancy a 4th wheel provides.
   // ---------------------------------------------------------------------
   constexpr float WHEEL_PYRAMID_SKEW_DEG = 45.0f;
   constexpr float WHEEL_MOUNT_RADIUS_M = 0.15f;
   constexpr float WHEEL_MOUNT_HEIGHT_M = 0.2f;
-  constexpr float WHEEL_MAX_TORQUE_NM = 0.2f;
+  constexpr float WHEEL_MAX_TORQUE_NM = 0.4f;
   constexpr float WHEEL_MAX_SPEED_RPM = 6000.0f;
-  constexpr float WHEEL_INERTIA_KGM2 = 1.6e-3f;
+  constexpr float WHEEL_INERTIA_KGM2 = 1.9e-2f;
 
   // ---------------------------------------------------------------------
   // Magnetorquers: 3 mutually orthogonal rods along the body axes -- see
